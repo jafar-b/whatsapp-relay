@@ -25,6 +25,8 @@ const fs = require('fs');
 const path = require('path');
 const mime = require('mime-types');
 
+const ROOT_DIR = __dirname;
+
 const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
@@ -45,7 +47,7 @@ app.get('/dashboard.html', (req, res) => {
 });
 
 // Media storage setup
-const MEDIA_DIR = './media';
+const MEDIA_DIR = path.join(ROOT_DIR, 'media');
 if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR, { recursive: true });
 app.use('/media', express.static(MEDIA_DIR));
 
@@ -67,8 +69,9 @@ const CONFIG = {
   RELEASE_ASSIGNMENTS_ON_DISCONNECT: true,
 };
 try {
-  if (fs.existsSync('./config.json')) {
-    Object.assign(CONFIG, JSON.parse(fs.readFileSync('./config.json', 'utf8')));
+  const configFile = path.join(ROOT_DIR, 'config.json');
+  if (fs.existsSync(configFile)) {
+    Object.assign(CONFIG, JSON.parse(fs.readFileSync(configFile, 'utf8')));
   }
 } catch (e) {
   console.error('[Bridge] Failed to load config.json:', e.message);
@@ -87,7 +90,7 @@ const chatStore = {};
 const operators = new Map(); // socketId -> { id, name, connectedAt, socketId }
 
 // Persistence
-const STORE_FILE = './store.json';
+const STORE_FILE = path.join(ROOT_DIR, 'store.json');
 let saveTimer = null;
 
 function toTimestamp(ts) {
@@ -137,10 +140,11 @@ function normalizeMessageRecord(msg = {}) {
 class RelayDatabase {
   constructor(dbPath) {
     this.dbPath = dbPath;
-    const absolute = path.resolve(dbPath);
+    const absolute = path.isAbsolute(dbPath) ? dbPath : path.join(ROOT_DIR, dbPath);
     const dir = path.dirname(absolute);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     this.db = new Database(absolute);
+    console.log(`[Bridge] Using SQLite database: ${absolute}`);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
     this.init();
