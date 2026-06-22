@@ -78,10 +78,10 @@ WhatsApp's linked device protocol only provides WhatsApp display names, not phon
 2. Save the `.vcf` file into this folder
 3. Run the sync script:
    ```bash
-   python3 sync_contacts.py
+   node sync_contacts.js
    pm2 restart wa-relay
    ```
-   *(See sync_contacts.py for the standalone script)*
+   *(See sync_contacts.js for the standalone script)*
 
 ### Current State (as of March 2026)
 - **835** personal chats loaded

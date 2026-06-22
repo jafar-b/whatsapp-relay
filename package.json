@@ -5,7 +5,8 @@
   "main": "bridge.js",
   "scripts": {
     "start": "node bridge.js",
-    "dev": "nodemon bridge.js"
+    "dev": "nodemon bridge.js",
+    "sync:contacts": "node sync_contacts.js"
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",
