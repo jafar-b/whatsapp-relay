@@ -1,0 +1,6 @@
+{
+  "MAX_MESSAGES_PER_CHAT": 500,
+  "SAVE_DEBOUNCE_MS": 2000,
+  "DB_PATH": "./relay.sqlite",
+  "RELEASE_ASSIGNMENTS_ON_DISCONNECT": true
+}
