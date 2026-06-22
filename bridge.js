@@ -35,6 +35,15 @@ const io = new Server(httpServer, {
 app.use(cors());
 app.use(express.json());
 
+// Serve the operator dashboard directly from the backend.
+const DASHBOARD_FILE = path.join(__dirname, 'dashboard.html');
+app.get('/', (req, res) => {
+  res.sendFile(DASHBOARD_FILE);
+});
+app.get('/dashboard.html', (req, res) => {
+  res.sendFile(DASHBOARD_FILE);
+});
+
 // Media storage setup
 const MEDIA_DIR = './media';
 if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR, { recursive: true });
