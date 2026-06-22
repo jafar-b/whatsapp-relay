@@ -508,6 +508,34 @@ function showToast(msg, type='success') {
   setTimeout(() => t.remove(), 3000);
 }
 
+function normalizeBridgeUrl(input) {
+  const raw = String(input || '').trim();
+  if (!raw) return null;
+  const candidate = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`;
+  try {
+    const parsed = new URL(candidate);
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+async function parseJsonResponse(res) {
+  const text = await res.text();
+  const contentType = (res.headers.get('content-type') || '').toLowerCase();
+
+  if (contentType.includes('application/json')) {
+    try {
+      return text ? JSON.parse(text) : {};
+    } catch {
+      throw new Error('Invalid JSON response from bridge');
+    }
+  }
+
+  const snippet = text.trim().slice(0, 80).replace(/\s+/g, ' ');
+  throw new Error(`Bridge returned non-JSON response (${res.status}): ${snippet || 'empty body'}`);
+}
+
 function autoResize(el) {
   el.style.height = 'auto';
   el.style.height = Math.min(el.scrollHeight, 120) + 'px';
@@ -768,7 +796,7 @@ async function claimActiveChat() {
       headers: { 'Content-Type': 'application/json', ...operatorHeaders() },
       body: JSON.stringify({ operatorId, operatorName }),
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (!res.ok) throw new Error(data.error || 'Unable to claim conversation');
     upsertChatRecord(data.chat);
     syncActiveChat();
@@ -788,7 +816,7 @@ async function releaseActiveChat() {
       headers: { 'Content-Type': 'application/json', ...operatorHeaders() },
       body: JSON.stringify({ operatorId, operatorName }),
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (!res.ok) throw new Error(data.error || 'Unable to release conversation');
     upsertChatRecord(data.chat);
     syncActiveChat();
@@ -1369,7 +1397,12 @@ async function createGroup() {
 function connectBridge() {
   const url = prompt('Bridge server URL:', bridgeUrl);
   if (!url) return;
-  bridgeUrl = url;
+  const normalized = normalizeBridgeUrl(url);
+  if (!normalized) {
+    showToast('Invalid bridge URL. Example: http://localhost:3001', 'error');
+    return;
+  }
+  bridgeUrl = normalized;
 
   if (socket) { socket.disconnect(); }
 
