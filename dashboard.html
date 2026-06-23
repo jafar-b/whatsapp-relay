@@ -56,7 +56,7 @@
   .sidebar-resizer:hover, .sidebar-resizer.resizing { background:var(--accent); }
   
   .sidebar-tabs { display:flex; flex-wrap:wrap; border-bottom:1px solid var(--border); background:var(--surface); padding:8px; gap:8px; }
-  .tab-btn { flex:1 0 calc(50% - 4px); padding:8px; border-radius:6px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; text-align:center; background:var(--surface2); color:var(--muted); border:1px solid var(--border); cursor:pointer; transition:all 0.15s; font-family:'Syne',sans-serif; }
+  .tab-btn { flex:1 0 calc(33.33% - 6px); padding:8px; border-radius:6px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; text-align:center; background:var(--surface2); color:var(--muted); border:1px solid var(--border); cursor:pointer; transition:all 0.15s; font-family:'Syne',sans-serif; }
   .tab-btn:hover { color:var(--text); border-color:var(--muted); }
   .tab-btn.active { color:#000; background:var(--accent); border-color:var(--accent); }
   
@@ -329,6 +329,7 @@
     <div class="operator-badge" id="operatorBadge">op://—</div>
     <button class="btn btn-ghost" onclick="connectBridge()">Connect Bridge</button>
     <span id="whatsappControlContainer"></span>
+    <button class="btn btn-ghost" onclick="triggerImportContacts()">Import Contacts</button>
     <button class="btn btn-primary" onclick="switchToCreate()">+ New Group</button>
   </div>
 </div>
@@ -349,6 +350,7 @@
     <div class="sidebar-tabs">
       <button class="tab-btn active" id="tabChats" onclick="switchSidebarTab('chats')">Chats</button>
       <button class="tab-btn" id="tabGroups" onclick="switchSidebarTab('groups')">Groups</button>
+      <button class="tab-btn" id="tabContacts" onclick="switchSidebarTab('contacts')">Contacts</button>
       <button class="tab-btn" id="tabChannels" onclick="switchSidebarTab('channels')">Channels</button>
       <button class="tab-btn" id="tabStatus" onclick="switchSidebarTab('status')">Status</button>
     </div>
@@ -452,6 +454,7 @@
 <input type="file" id="fileInputVideo" accept="video/*" onchange="handleFileSelected('video',this)">
 <input type="file" id="fileInputAudio" accept="audio/*" onchange="handleFileSelected('audio',this)">
 <input type="file" id="fileInputDocument" accept="*/*" onchange="handleFileSelected('document',this)">
+<input type="file" id="fileInputContacts" accept=".vcf" onchange="handleImportContacts(this)">
 
 <script>
 // ─── State ───────────────────────────────────────────────────────────────────
@@ -465,6 +468,7 @@ let connectorOperatorId = null;
 let connectorOperatorName = null;
 let pendingMedia = null;
 let allChats = [];
+let allContacts = [];
 let searchTimer = null;
 let editingMessageId = null;
 let editingMessageJid = null;
@@ -701,7 +705,13 @@ function switchSidebarTab(tab) {
   const btnId = 'tab' + tab.charAt(0).toUpperCase() + tab.slice(1);
   const activeBtn = document.getElementById(btnId);
   if (activeBtn) activeBtn.classList.add('active');
-  renderChatList(allChats);
+
+  if (tab === 'contacts') {
+    renderContactsList();
+    loadContacts();
+  } else {
+    renderChatList(allChats);
+  }
 }
 
 function initSidebarResize() {
@@ -787,6 +797,101 @@ function renderChatList(chats) {
     `;
     list.appendChild(item);
   });
+}
+
+function renderContactsList() {
+  const list = document.getElementById('chatList');
+  list.innerHTML = '';
+
+  document.getElementById('chatCount').textContent = allContacts.length;
+
+  if (allContacts.length === 0) {
+    list.innerHTML = `
+      <div style="padding:20px;text-align:center;color:var(--muted);font-size:12px">
+        No contacts found.<br>Use "Import Contacts" to add VCF contacts.
+      </div>
+    `;
+    return;
+  }
+
+  allContacts.forEach(contact => {
+    const item = document.createElement('div');
+    item.className = 'chat-item';
+    item.onclick = () => openContactChat(contact);
+
+    item.innerHTML = `
+      <div class="chat-avatar personal">${(contact.name || '?')[0].toUpperCase()}</div>
+      <div class="chat-info">
+        <div class="chat-name-row">
+          <div class="chat-name">${contact.name}</div>
+        </div>
+        <div class="chat-preview">+${contact.phone}</div>
+      </div>
+    `;
+    list.appendChild(item);
+  });
+}
+
+async function loadContacts() {
+  if (!socket) return;
+  try {
+    const res = await fetch(`${bridgeUrl}/api/contacts`);
+    allContacts = await res.json();
+    if (activeSidebarTab === 'contacts') {
+      renderContactsList();
+    }
+  } catch (e) {
+    console.error('Failed to load contacts:', e);
+  }
+}
+
+function openContactChat(contact) {
+  let chat = allChats.find(c => c.id === contact.id);
+  if (!chat) {
+    chat = {
+      id: contact.id,
+      name: contact.name,
+      type: 'personal',
+      lastMsg: '',
+      timestamp: Math.floor(Date.now() / 1000),
+      unreadCount: 0,
+      phone: contact.phone
+    };
+    allChats.unshift(chat);
+  }
+  switchSidebarTab('chats');
+  openChat(chat, null);
+}
+
+function triggerImportContacts() {
+  document.getElementById('fileInputContacts').click();
+}
+
+async function handleImportContacts(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    showToast('Importing contacts...', 'info');
+    const res = await fetch(`${bridgeUrl}/api/contacts/import`, {
+      method: 'POST',
+      body: formData
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || 'Import failed');
+    }
+    const data = await res.json();
+    showToast(`Imported ${data.imported} contacts (skipped ${data.skipped} duplicates).`);
+    loadContacts();
+  } catch (e) {
+    showToast('Import failed: ' + e.message, 'error');
+  } finally {
+    input.value = '';
+  }
 }
 
 // ─── Search ───────────────────────────────────────────────────────────────────
@@ -1777,6 +1882,10 @@ function connectBridgeDirect(normalized) {
       renderChatList(allChats);
     }
     showToast('Error: ' + message, 'error');
+  });
+
+  socket.on('contacts_updated', () => {
+    loadContacts();
   });
 
   socket.on('disconnect', () => {

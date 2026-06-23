@@ -1229,6 +1229,96 @@ app.get('/api/contacts/search', (req, res) => {
     }));
   res.json(results);
 });
+
+function parseVcfContacts(content) {
+  const unfolded = content.replace(/\r\n/g, '\n').replace(/\n[ \t]/g, '');
+  const contactsList = [];
+  const cards = unfolded.split('BEGIN:VCARD');
+
+  for (const card of cards) {
+    if (!card.trim()) continue;
+
+    const nameMatch = card.match(/^FN(?:;[^:]*)?:(.+)$/m);
+    if (!nameMatch) continue;
+
+    const name = nameMatch[1].trim();
+    const telMatches = card.matchAll(/^TEL[^:]*:([^\n]+)/gm);
+
+    for (const match of telMatches) {
+      let digits = match[1].replace(/\D/g, '');
+      if (digits.length < 7) continue;
+
+      if (digits.startsWith('00')) {
+        digits = digits.slice(2);
+      }
+
+      if (!contactsList.some(c => c.phone === digits)) {
+        contactsList.push({ phone: digits, name });
+      }
+    }
+  }
+  return contactsList;
+}
+
+app.get('/api/contacts', (req, res) => {
+  try {
+    const contacts = Object.values(contactStore)
+      .map((c) => ({
+        id: c.id,
+        name: c.name || c.notify || c.verifiedName || c.id.split('@')[0],
+        phone: c.id.split('@')[0],
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    res.json(contacts);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/contacts/import', upload.single('file'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded' });
+  }
+  const vcfPath = req.file.path;
+  try {
+    const content = fs.readFileSync(vcfPath, 'utf8');
+    const parsedContacts = parseVcfContacts(content);
+    
+    let imported = 0;
+    let skipped = 0;
+
+    for (const c of parsedContacts) {
+      const jid = `${c.phone}@s.whatsapp.net`;
+      
+      const exists = contactStore[jid] || database.db.prepare('SELECT 1 FROM contacts WHERE id = ?').get(jid);
+      if (exists) {
+        skipped++;
+        if (chatStore[jid] && (!chatStore[jid].name || chatStore[jid].name === c.phone)) {
+          chatStore[jid].name = c.name;
+          database.upsertChat(chatStore[jid]);
+        }
+        continue;
+      }
+
+      const contactObj = { id: jid, name: c.name, notify: c.name };
+      contactStore[jid] = contactObj;
+      database.upsertContact(contactObj);
+      imported++;
+    }
+
+    try { fs.unlinkSync(vcfPath); } catch {}
+
+    io.emit('contacts_updated');
+    broadcastChats();
+    saveStore();
+
+    res.json({ success: true, imported, skipped });
+  } catch (err) {
+    try { fs.unlinkSync(vcfPath); } catch {}
+    console.error('[Bridge] Contact import failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 app.get('/api/messages', (req, res) => {
   const { jid, limit = 50, before } = req.query;
   if (!jid) {
