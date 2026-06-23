@@ -85,6 +85,11 @@ const messageStore = {};
 const groupStore = {};
 const contactStore = {};
 const chatStore = {};
+// Maps @lid JIDs to their corresponding @s.whatsapp.net JID and vice-versa.
+// WhatsApp's multi-device protocol uses opaque @lid identifiers internally;
+// we track both directions so resolveContactName() works regardless of format.
+const lidToJid = {};  // "hex123@lid" -> "91987...@s.whatsapp.net"
+const jidToLid = {};  // "91987...@s.whatsapp.net" -> "hex123@lid"
 
 // Operator registry
 const operators = new Map(); // socketId -> { id, name, connectedAt, socketId }
@@ -346,7 +351,14 @@ function loadStore() {
     }
     const state = database.loadState();
     for (const contact of state.contacts) {
-      if (contact?.id) contactStore[contact.id] = contact;
+      if (contact?.id) {
+        contactStore[contact.id] = contact;
+        // Rebuild @lid <-> phone JID cross-reference from persisted contacts.
+        if (contact.lid && contact.id) {
+          lidToJid[contact.lid] = contact.id;
+          jidToLid[contact.id] = contact.lid;
+        }
+      }
     }
     for (const chat of state.chats) {
       if (chat?.id) chatStore[chat.id] = normalizeChat(chat);
@@ -357,7 +369,7 @@ function loadStore() {
       messageStore[msg.jid].push(msg);
     }
     console.log(
-      `[Bridge] Loaded SQLite store: ${Object.keys(chatStore).length} chats, ${Object.keys(contactStore).length} contacts, ${Object.keys(messageStore).length} message threads`
+      `[Bridge] Loaded SQLite store: ${Object.keys(chatStore).length} chats, ${Object.keys(contactStore).length} contacts, ${Object.keys(messageStore).length} message threads, ${Object.keys(lidToJid).length} lid mappings`
     );
   } catch (e) {
     console.error('[Bridge] Failed to load store:', e.message);
@@ -369,8 +381,28 @@ function sortedChats() {
 }
 
 function resolveContactName(jid) {
-  const contact = contactStore[jid];
-  return contact?.name || contact?.notify || contact?.verifiedName || null;
+  // Direct lookup first.
+  let contact = contactStore[jid];
+  if (contact?.name || contact?.notify || contact?.verifiedName) {
+    return contact.name || contact.notify || contact.verifiedName;
+  }
+  // Cross-reference: if jid is a @lid, look up the mapped phone JID.
+  const mappedJid = lidToJid[jid];
+  if (mappedJid) {
+    contact = contactStore[mappedJid];
+    if (contact?.name || contact?.notify || contact?.verifiedName) {
+      return contact.name || contact.notify || contact.verifiedName;
+    }
+  }
+  // Cross-reference: if jid is a phone JID, check if the @lid alias has a name.
+  const mappedLid = jidToLid[jid];
+  if (mappedLid) {
+    contact = contactStore[mappedLid];
+    if (contact?.name || contact?.notify || contact?.verifiedName) {
+      return contact.name || contact.notify || contact.verifiedName;
+    }
+  }
+  return null;
 }
 
 function backfillContactNames() {
@@ -751,6 +783,11 @@ async function connectToWhatsApp() {
     sock.ev.on('contacts.upsert', (contacts) => {
       for (const contact of contacts) {
         contactStore[contact.id] = { ...contactStore[contact.id], ...contact };
+        // Track @lid <-> phone JID cross-reference mappings.
+        if (contact.lid && contact.id) {
+          lidToJid[contact.lid] = contact.id;
+          jidToLid[contact.id] = contact.lid;
+        }
         database.upsertContact(contactStore[contact.id]);
       }
       backfillContactNames();
@@ -761,17 +798,29 @@ async function connectToWhatsApp() {
       for (const update of updates) {
         if (contactStore[update.id]) Object.assign(contactStore[update.id], update);
         else contactStore[update.id] = update;
+        // Track @lid <-> phone JID mappings from the lid field.
+        if (update.lid && update.id) {
+          lidToJid[update.lid] = update.id;
+          jidToLid[update.id] = update.lid;
+        }
         database.upsertContact(contactStore[update.id]);
       }
       backfillContactNames();
       saveStore();
     });
 
-    sock.ev.on('messaging-history.set', ({ chats, contacts }) => {
+    sock.ev.on('messaging-history.set', ({ chats, contacts, messages, isLatest }) => {
+      // --- Process contacts and build lid<->jid map ---
       for (const contact of contacts || []) {
         contactStore[contact.id] = { ...contactStore[contact.id], ...contact };
+        // Track @lid <-> phone JID cross-reference mappings.
+        if (contact.lid && contact.id) {
+          lidToJid[contact.lid] = contact.id;
+          jidToLid[contact.id] = contact.lid;
+        }
         database.upsertContact(contactStore[contact.id]);
       }
+      // --- Process chats ---
       for (const chat of chats || []) {
         const isGroup = chat.id.endsWith('@g.us');
         const contact = contactStore[chat.id];
@@ -779,7 +828,7 @@ async function connectToWhatsApp() {
         chatStore[chat.id] = normalizeChat({
           ...chatStore[chat.id],
           id: chat.id,
-          name: chat.name || contact?.name || contact?.notify || contact?.verifiedName || chat.id.split('@')[0],
+          name: chat.name || resolveContactName(chat.id) || chat.id.split('@')[0],
           type: isGroup ? 'group' : 'personal',
           unreadCount: chat.unreadCount || 0,
           timestamp: ts,
@@ -787,10 +836,77 @@ async function connectToWhatsApp() {
         });
         database.upsertChat(chatStore[chat.id]);
       }
+      // --- Process history messages (this was the missing piece!) ---
+      let historyMsgCount = 0;
+      for (const rawMsg of messages || []) {
+        try {
+          // History messages arrive pre-parsed; they have a .message field like live messages.
+          if (!rawMsg?.message) continue;
+          const key = rawMsg.key || {};
+          const jid = key.remoteJid;
+          if (!jid) continue;
+          const m = rawMsg.message;
+          let content = '';
+          let mediaType = 'text';
+          // Extract text content from the most common history message shapes.
+          if (m.conversation) {
+            content = m.conversation;
+          } else if (m.extendedTextMessage?.text) {
+            content = m.extendedTextMessage.text;
+          } else if (m.imageMessage) {
+            content = m.imageMessage.caption || '';
+            mediaType = 'image';
+          } else if (m.videoMessage) {
+            content = m.videoMessage.caption || '';
+            mediaType = 'video';
+          } else if (m.audioMessage) {
+            content = m.audioMessage.ptt ? 'Voice message' : 'Audio file';
+            mediaType = m.audioMessage.ptt ? 'voice' : 'audio';
+          } else if (m.documentMessage) {
+            content = `Document: ${m.documentMessage.fileName || 'file'}`;
+            mediaType = 'document';
+          } else if (m.stickerMessage) {
+            content = 'Sticker';
+            mediaType = 'sticker';
+          } else if (m.locationMessage) {
+            content = m.locationMessage.name || 'Shared location';
+            mediaType = 'location';
+          } else {
+            content = '[Unsupported message type]';
+          }
+          const msgRecord = {
+            id: key.id,
+            from: jid,
+            jid,
+            fromMe: Boolean(key.fromMe),
+            participant: rawMsg.participant || key.participant || null,
+            sender: rawMsg.pushName || rawMsg.participant || key.participant || null,
+            operatorId: null,
+            operatorName: null,
+            content,
+            mediaType,
+            mediaUrl: null,
+            fileName: m.documentMessage?.fileName || null,
+            mimetype: m.imageMessage?.mimetype || m.videoMessage?.mimetype || m.audioMessage?.mimetype || m.documentMessage?.mimetype || null,
+            timestamp: toTimestamp(rawMsg.messageTimestamp),
+            isGroup: jid.endsWith('@g.us'),
+            editedAt: null,
+            deleted: Boolean(rawMsg.message?.protocolMessage?.type === 0),
+            clientTempId: null,
+          };
+          if (!msgRecord.id || !msgRecord.jid) continue;
+          // addMessageToStore deduplicates, sorts, trims, and persists to DB.
+          addMessageToStore(msgRecord);
+          historyMsgCount++;
+        } catch (histErr) {
+          // Don't let one bad history message crash the entire sync.
+          console.warn('[Bridge] Skipping bad history message:', histErr.message);
+        }
+      }
       broadcastChats();
       backfillContactNames();
       saveStore();
-      console.log(`[Bridge] History sync: ${chats?.length || 0} chats, ${contacts?.length || 0} contacts`);
+      console.log(`[Bridge] History sync: ${chats?.length || 0} chats, ${contacts?.length || 0} contacts, ${historyMsgCount} messages (isLatest=${isLatest})`);
     });
 
     sock.ev.on('chats.upsert', (chats) => {
@@ -1301,6 +1417,22 @@ io.on('connection', (socket) => {
   });
 
   socket.on('open_chat', ({ jid }) => {
+    // If in-memory store is cold (e.g. after a server restart) but SQLite has
+    // persisted messages, hydrate the in-memory store from the DB now so the
+    // operator sees chat history immediately on click.
+    if (!messageStore[jid] || messageStore[jid].length === 0) {
+      try {
+        const dbMsgsStmt = database.db.prepare(
+          'SELECT payload FROM messages WHERE jid = ? ORDER BY timestamp ASC, id ASC LIMIT ?'
+        );
+        const rows = dbMsgsStmt.all(jid, CONFIG.MAX_MESSAGES_PER_CHAT);
+        if (rows.length > 0) {
+          messageStore[jid] = rows.map((row) => normalizeMessageRecord(JSON.parse(row.payload)));
+        }
+      } catch (dbErr) {
+        console.warn('[Bridge] open_chat DB hydration error:', dbErr.message);
+      }
+    }
     const msgs = messageStore[jid] || [];
     const limit = 50;
     const sliced = msgs.slice(-limit);
