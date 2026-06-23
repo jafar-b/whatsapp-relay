@@ -405,12 +405,41 @@ function resolveContactName(jid) {
   return null;
 }
 
+function getPreferredJid(jid) {
+  if (!jid) return jid;
+  const altJid = jid.endsWith('@lid') ? lidToJid[jid] : jidToLid[jid];
+  if (altJid) {
+    if (chatStore[altJid] && !chatStore[jid]) {
+      return altJid;
+    }
+  }
+  return jid;
+}
+
+function getMessagesForJid(jid) {
+  const altJid = jid.endsWith('@lid') ? lidToJid[jid] : jidToLid[jid];
+  let msgs = messageStore[jid] || [];
+  if (altJid && messageStore[altJid]) {
+    const combined = [...msgs, ...messageStore[altJid]];
+    const unique = [];
+    const seen = new Set();
+    for (const msg of combined) {
+      if (!seen.has(msg.id)) {
+        seen.add(msg.id);
+        unique.push(msg);
+      }
+    }
+    msgs = unique.sort((a, b) => toTimestamp(a.timestamp) - toTimestamp(b.timestamp));
+  }
+  return msgs;
+}
+
 function backfillContactNames() {
   let updated = false;
   for (const [jid, chat] of Object.entries(chatStore)) {
     if (chat.type !== 'personal') continue;
-    const name = resolveContactName(jid);
-    if (name && chat.name === jid.split('@')[0]) {
+    const name = chatDisplayName(jid);
+    if (name && chat.name !== name) {
       chat.name = name;
       updated = true;
     }
@@ -471,7 +500,22 @@ function broadcastChats() {
 }
 
 function chatDisplayName(jid) {
-  return resolveContactName(jid) || jid?.split('@')[0] || jid;
+  const resolvedName = resolveContactName(jid);
+  if (resolvedName) return resolvedName;
+
+  // Cross-reference: if JID is a LID JID, try to get the phone number JID.
+  if (jid?.endsWith('@lid')) {
+    const phoneJid = lidToJid[jid];
+    if (phoneJid) {
+      return '+' + phoneJid.split('@')[0];
+    }
+  }
+  // If JID is a phone JID, prefix with '+' for clear display.
+  if (jid?.endsWith('@s.whatsapp.net')) {
+    return '+' + jid.split('@')[0];
+  }
+
+  return jid?.split('@')[0] || jid;
 }
 
 function ensureChatExists(jid) {
@@ -742,10 +786,13 @@ async function connectToWhatsApp() {
     });
 
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
-      if (type !== 'notify') return;
+      const isHistory = type === 'append';
+      if (type !== 'notify' && !isHistory) return;
       for (const msg of messages) {
         if (!msg.message) continue;
-        const parsed = normalizeMessageRecord(await parseMessage(msg));
+        const parsed = normalizeMessageRecord(await parseMessage(msg, isHistory));
+        parsed.jid = getPreferredJid(parsed.jid);
+        parsed.from = parsed.jid;
         const thread = messageStore[parsed.jid] || [];
         if (thread.some((existing) => existing.id === parsed.id)) continue;
         addMessageToStore(parsed);
@@ -755,7 +802,7 @@ async function connectToWhatsApp() {
         if (!chatStore[parsed.jid]) {
           chatStore[parsed.jid] = normalizeChat({
             id: parsed.jid,
-            name: contact?.name || contact?.notify || parsed.jid?.split('@')[0] || parsed.jid,
+            name: contact?.name || contact?.notify || chatDisplayName(parsed.jid),
             type: isGroup ? 'group' : 'personal',
             unreadCount: 0,
             timestamp: parsed.timestamp,
@@ -765,7 +812,7 @@ async function connectToWhatsApp() {
           chatStore[parsed.jid].lastMsg = parsed.content;
           chatStore[parsed.jid].timestamp = parsed.timestamp;
           if (!chatStore[parsed.jid].name || chatStore[parsed.jid].name === parsed.jid?.split('@')[0]) {
-            chatStore[parsed.jid].name = contact?.name || contact?.notify || chatStore[parsed.jid].name;
+            chatStore[parsed.jid].name = contact?.name || contact?.notify || chatDisplayName(parsed.jid);
           }
         }
         broadcastChats();
@@ -828,7 +875,7 @@ async function connectToWhatsApp() {
         chatStore[chat.id] = normalizeChat({
           ...chatStore[chat.id],
           id: chat.id,
-          name: chat.name || resolveContactName(chat.id) || chat.id.split('@')[0],
+          name: chat.name || chatDisplayName(chat.id),
           type: isGroup ? 'group' : 'personal',
           unreadCount: chat.unreadCount || 0,
           timestamp: ts,
@@ -843,8 +890,9 @@ async function connectToWhatsApp() {
           // History messages arrive pre-parsed; they have a .message field like live messages.
           if (!rawMsg?.message) continue;
           const key = rawMsg.key || {};
-          const jid = key.remoteJid;
-          if (!jid) continue;
+          const rawJid = key.remoteJid;
+          if (!rawJid) continue;
+          const jid = getPreferredJid(rawJid);
           const m = rawMsg.message;
           let content = '';
           let mediaType = 'text';
@@ -912,11 +960,10 @@ async function connectToWhatsApp() {
     sock.ev.on('chats.upsert', (chats) => {
       for (const chat of chats) {
         const isGroup = chat.id.endsWith('@g.us');
-        const contact = contactStore[chat.id];
         chatStore[chat.id] = normalizeChat({
           ...chatStore[chat.id],
           id: chat.id,
-          name: chat.name || contact?.name || contact?.notify || contact?.verifiedName || chat.id.split('@')[0],
+          name: chat.name || chatDisplayName(chat.id),
           type: isGroup ? 'group' : 'personal',
           unreadCount: chat.unreadCount || 0,
           timestamp: toTimestamp(chat.conversationTimestamp),
@@ -935,7 +982,7 @@ async function connectToWhatsApp() {
 }
 
 // Parse message with media
-async function parseMessage(raw) {
+async function parseMessage(raw, skipMedia = false) {
   const m = raw.message;
   let content = '';
   let mediaUrl = null;
@@ -950,65 +997,75 @@ async function parseMessage(raw) {
     content = m.imageMessage.caption || '';
     mediaType = 'image';
     mimetype = m.imageMessage.mimetype;
-    try {
-      const buffer = await downloadMediaMessage(raw, 'buffer', {});
-      const ext = mime.extension(mimetype) || 'jpg';
-      const filename = `${Date.now()}.${ext}`;
-      fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
-      mediaUrl = `/media/${filename}`;
-    } catch (e) {
-      console.error('[Bridge] Image download failed:', e.message);
+    if (!skipMedia) {
+      try {
+        const buffer = await downloadMediaMessage(raw, 'buffer', {});
+        const ext = mime.extension(mimetype) || 'jpg';
+        const filename = `${Date.now()}.${ext}`;
+        fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
+        mediaUrl = `/media/${filename}`;
+      } catch (e) {
+        console.error('[Bridge] Image download failed:', e.message);
+      }
     }
   } else if (m.videoMessage) {
     content = m.videoMessage.caption || '';
     mediaType = 'video';
     mimetype = m.videoMessage.mimetype;
-    try {
-      const buffer = await downloadMediaMessage(raw, 'buffer', {});
-      const ext = mime.extension(mimetype) || 'mp4';
-      const filename = `${Date.now()}.${ext}`;
-      fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
-      mediaUrl = `/media/${filename}`;
-    } catch (e) {
-      console.error('[Bridge] Video download failed:', e.message);
+    if (!skipMedia) {
+      try {
+        const buffer = await downloadMediaMessage(raw, 'buffer', {});
+        const ext = mime.extension(mimetype) || 'mp4';
+        const filename = `${Date.now()}.${ext}`;
+        fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
+        mediaUrl = `/media/${filename}`;
+      } catch (e) {
+        console.error('[Bridge] Video download failed:', e.message);
+      }
     }
   } else if (m.audioMessage) {
     mediaType = m.audioMessage.ptt ? 'voice' : 'audio';
     mimetype = m.audioMessage.mimetype;
     content = m.audioMessage.ptt ? 'Voice message' : 'Audio file';
-    try {
-      const buffer = await downloadMediaMessage(raw, 'buffer', {});
-      const ext = mime.extension(mimetype) || 'ogg';
-      const filename = `${Date.now()}.${ext}`;
-      fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
-      mediaUrl = `/media/${filename}`;
-    } catch (e) {
-      console.error('[Bridge] Audio download failed:', e.message);
+    if (!skipMedia) {
+      try {
+        const buffer = await downloadMediaMessage(raw, 'buffer', {});
+        const ext = mime.extension(mimetype) || 'ogg';
+        const filename = `${Date.now()}.${ext}`;
+        fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
+        mediaUrl = `/media/${filename}`;
+      } catch (e) {
+        console.error('[Bridge] Audio download failed:', e.message);
+      }
     }
   } else if (m.documentMessage) {
     mediaType = 'document';
     mimetype = m.documentMessage.mimetype;
     fileName = m.documentMessage.fileName || 'document';
     content = `Document: ${fileName}`;
-    try {
-      const buffer = await downloadMediaMessage(raw, 'buffer', {});
-      const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
-      const filename = `${Date.now()}-${safeName}`;
-      fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
-      mediaUrl = `/media/${filename}`;
-    } catch (e) {
-      console.error('[Bridge] Document download failed:', e.message);
+    if (!skipMedia) {
+      try {
+        const buffer = await downloadMediaMessage(raw, 'buffer', {});
+        const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const filename = `${Date.now()}-${safeName}`;
+        fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
+        mediaUrl = `/media/${filename}`;
+      } catch (e) {
+        console.error('[Bridge] Document download failed:', e.message);
+      }
     }
   } else if (m.stickerMessage) {
     mediaType = 'sticker';
     content = 'Sticker';
-    try {
-      const buffer = await downloadMediaMessage(raw, 'buffer', {});
-      const filename = `${Date.now()}.webp`;
-      fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
-      mediaUrl = `/media/${filename}`;
-    } catch (e) {
-      console.error('[Bridge] Sticker download failed:', e.message);
+    if (!skipMedia) {
+      try {
+        const buffer = await downloadMediaMessage(raw, 'buffer', {});
+        const filename = `${Date.now()}.webp`;
+        fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
+        mediaUrl = `/media/${filename}`;
+      } catch (e) {
+        console.error('[Bridge] Sticker download failed:', e.message);
+      }
     }
   } else if (m.locationMessage) {
     mediaType = 'location';
@@ -1111,7 +1168,28 @@ app.get('/api/messages', (req, res) => {
       .sort((a, b) => toTimestamp(a.timestamp) - toTimestamp(b.timestamp));
     return res.json(allMsgs.slice(-Number(limit)));
   }
-  let msgs = messageStore[jid] || [];
+
+  // Hydrate from DB if cold before returning combined list
+  const altJid = jid.endsWith('@lid') ? lidToJid[jid] : jidToLid[jid];
+  const hydrate = (targetJid) => {
+    if (!messageStore[targetJid] || messageStore[targetJid].length === 0) {
+      try {
+        const dbMsgsStmt = database.db.prepare(
+          'SELECT payload FROM messages WHERE jid = ? ORDER BY timestamp ASC, id ASC LIMIT ?'
+        );
+        const rows = dbMsgsStmt.all(targetJid, CONFIG.MAX_MESSAGES_PER_CHAT);
+        if (rows.length > 0) {
+          messageStore[targetJid] = rows.map((row) => normalizeMessageRecord(JSON.parse(row.payload)));
+        }
+      } catch (dbErr) {
+        console.warn(`[Bridge] API messages DB hydration error for ${targetJid}:`, dbErr.message);
+      }
+    }
+  };
+  hydrate(jid);
+  if (altJid) hydrate(altJid);
+
+  let msgs = getMessagesForJid(jid);
   if (before) {
     const beforeTs = Number(before);
     msgs = msgs.filter((msg) => toTimestamp(msg.timestamp) < beforeTs);
@@ -1420,20 +1498,28 @@ io.on('connection', (socket) => {
     // If in-memory store is cold (e.g. after a server restart) but SQLite has
     // persisted messages, hydrate the in-memory store from the DB now so the
     // operator sees chat history immediately on click.
-    if (!messageStore[jid] || messageStore[jid].length === 0) {
-      try {
-        const dbMsgsStmt = database.db.prepare(
-          'SELECT payload FROM messages WHERE jid = ? ORDER BY timestamp ASC, id ASC LIMIT ?'
-        );
-        const rows = dbMsgsStmt.all(jid, CONFIG.MAX_MESSAGES_PER_CHAT);
-        if (rows.length > 0) {
-          messageStore[jid] = rows.map((row) => normalizeMessageRecord(JSON.parse(row.payload)));
+    const altJid = jid.endsWith('@lid') ? lidToJid[jid] : jidToLid[jid];
+
+    const hydrate = (targetJid) => {
+      if (!messageStore[targetJid] || messageStore[targetJid].length === 0) {
+        try {
+          const dbMsgsStmt = database.db.prepare(
+            'SELECT payload FROM messages WHERE jid = ? ORDER BY timestamp ASC, id ASC LIMIT ?'
+          );
+          const rows = dbMsgsStmt.all(targetJid, CONFIG.MAX_MESSAGES_PER_CHAT);
+          if (rows.length > 0) {
+            messageStore[targetJid] = rows.map((row) => normalizeMessageRecord(JSON.parse(row.payload)));
+          }
+        } catch (dbErr) {
+          console.warn(`[Bridge] open_chat DB hydration error for ${targetJid}:`, dbErr.message);
         }
-      } catch (dbErr) {
-        console.warn('[Bridge] open_chat DB hydration error:', dbErr.message);
       }
-    }
-    const msgs = messageStore[jid] || [];
+    };
+
+    hydrate(jid);
+    if (altJid) hydrate(altJid);
+
+    const msgs = getMessagesForJid(jid);
     const limit = 50;
     const sliced = msgs.slice(-limit);
     socket.emit('chat_messages', {
@@ -1475,13 +1561,17 @@ io.on('connection', (socket) => {
     if (!lock.ok) return sendLockError(socket, lock);
     try {
       await sock.sendMessage(jid, { edit: { id: messageId, remoteJid: jid, fromMe: true }, text: newContent });
-      const msgs = messageStore[jid];
-      if (msgs) {
-        const found = msgs.find((msg) => msg.id === messageId);
-        if (found) {
-          found.content = newContent;
-          found.editedAt = Date.now();
-          database.upsertMessage(found);
+      const altJid = jid.endsWith('@lid') ? lidToJid[jid] : jidToLid[jid];
+      const targetJids = altJid ? [jid, altJid] : [jid];
+      for (const tJid of targetJids) {
+        const msgs = messageStore[tJid];
+        if (msgs) {
+          const found = msgs.find((msg) => msg.id === messageId);
+          if (found) {
+            found.content = newContent;
+            found.editedAt = Date.now();
+            database.upsertMessage(found);
+          }
         }
       }
       io.emit('message_edited', { jid, messageId, newContent, editedAt: Date.now() });
@@ -1498,13 +1588,17 @@ io.on('connection', (socket) => {
     if (!lock.ok) return sendLockError(socket, lock);
     try {
       await sock.sendMessage(jid, { delete: { id: messageId, remoteJid: jid, fromMe: true } });
-      const msgs = messageStore[jid];
-      if (msgs) {
-        const found = msgs.find((msg) => msg.id === messageId);
-        if (found) {
-          found.deleted = true;
-          found.content = '';
-          database.upsertMessage(found);
+      const altJid = jid.endsWith('@lid') ? lidToJid[jid] : jidToLid[jid];
+      const targetJids = altJid ? [jid, altJid] : [jid];
+      for (const tJid of targetJids) {
+        const msgs = messageStore[tJid];
+        if (msgs) {
+          const found = msgs.find((msg) => msg.id === messageId);
+          if (found) {
+            found.deleted = true;
+            found.content = '';
+            database.upsertMessage(found);
+          }
         }
       }
       io.emit('message_deleted', { jid, messageId });
