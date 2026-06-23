@@ -459,8 +459,10 @@ let socket = null;
 let bridgeUrl = 'http://localhost:3001';
 let activeChat = null;         // { id, name, type, ... }
 let currentTab = 'operators';
-let operatorId = '';
-let operatorName = '';
+let operatorId = localStorage.getItem('whatsapp_relay_operator_id') || '';
+let operatorName = localStorage.getItem('whatsapp_relay_operator_name') || '';
+let connectorOperatorId = null;
+let connectorOperatorName = null;
 let pendingMedia = null;
 let allChats = [];
 let searchTimer = null;
@@ -673,6 +675,7 @@ function promptOperatorName() {
 function saveOperatorName() {
   const name = document.getElementById('operatorNameInput').value.trim();
   operatorName = name || operatorId;
+  localStorage.setItem('whatsapp_relay_operator_name', operatorName);
   document.getElementById('namePrompt').classList.add('hidden');
   document.getElementById('operatorBadge').textContent = 'op://' + operatorName.toLowerCase().replace(/\s+/g,'-');
   if (socket?.connected) {
@@ -1509,7 +1512,12 @@ function updateTopbarButtons() {
   }
 
   if (connectionStatus === 'connected') {
-    container.innerHTML = `<button class="btn btn-danger" onclick="confirmDisconnectWhatsApp()">Disconnect WA</button>`;
+    const isConnector = !connectorOperatorId || (connectorOperatorId === operatorId);
+    if (isConnector) {
+      container.innerHTML = `<button class="btn btn-danger" onclick="confirmDisconnectWhatsApp()">Disconnect WA</button>`;
+    } else {
+      container.innerHTML = `<span style="font-size:12px;color:var(--muted);padding:6px 12px;background:var(--surface2);border-radius:6px;border:1px solid var(--border)">Connected by ${connectorOperatorName || 'another operator'}</span>`;
+    }
   } else {
     container.innerHTML = `<button class="btn btn-primary" onclick="linkWhatsApp()">Link WhatsApp</button>`;
   }
@@ -1518,9 +1526,13 @@ function updateTopbarButtons() {
 function confirmDisconnectWhatsApp() {
   showConfirm('Are you sure you want to disconnect WhatsApp? This will log you out and require scanning a new QR code to reconnect.', async () => {
     try {
-      const res = await fetch(`${bridgeUrl}/api/whatsapp/disconnect`, { method: 'POST' });
+      const res = await fetch(`${bridgeUrl}/api/whatsapp/disconnect`, { 
+        method: 'POST',
+        headers: operatorHeaders()
+      });
       if (!res.ok) {
-        throw new Error('Failed to disconnect WhatsApp');
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || 'Failed to disconnect WhatsApp');
       }
       showToast('Disconnect request sent.');
     } catch (e) {
@@ -1531,6 +1543,9 @@ function confirmDisconnectWhatsApp() {
 
 function linkWhatsApp() {
   document.getElementById('qrOverlay').classList.remove('hidden');
+  if (socket?.connected) {
+    socket.emit('linking_whatsapp', { operatorId, operatorName });
+  }
   if (!latestQrData) {
     showToast('Waiting for QR code to generate...', 'info');
   }
@@ -1567,7 +1582,14 @@ async function connectBridge() {
   if (isCurrentWaConnected && isNewBridgeWaConnected && normalized !== bridgeUrl) {
     try {
       showToast('Disconnecting current WhatsApp login...', 'info');
-      await fetch(`${bridgeUrl}/api/whatsapp/disconnect`, { method: 'POST' });
+      const res = await fetch(`${bridgeUrl}/api/whatsapp/disconnect`, { 
+        method: 'POST',
+        headers: operatorHeaders()
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || 'Failed to disconnect WhatsApp');
+      }
       showToast('Current WhatsApp login disconnected.');
     } catch (e) {
       console.error('Error disconnecting current WhatsApp:', e);
@@ -1583,24 +1605,44 @@ function connectBridgeDirect(normalized) {
 
   if (socket) { socket.disconnect(); }
 
-  socket = io(bridgeUrl, { transports:['websocket'] });
+  // Load operator info from localStorage if available
+  const savedId = localStorage.getItem('whatsapp_relay_operator_id');
+  const savedName = localStorage.getItem('whatsapp_relay_operator_name');
+  if (savedId) operatorId = savedId;
+  if (savedName) operatorName = savedName;
+
+  socket = io(bridgeUrl, { 
+    transports:['websocket'],
+    query: {
+      operatorId: operatorId || '',
+      operatorName: operatorName || ''
+    }
+  });
 
   socket.on('connect', () => {
     updateStatus('connecting', 'Bridge Connected');
     showToast('Bridge server connected!');
-    promptOperatorName();
+    if (!operatorName) {
+      promptOperatorName();
+    } else {
+      document.getElementById('operatorBadge').textContent = 'op://' + operatorName.toLowerCase().replace(/\s+/g,'-');
+      socket.emit('set_operator_name', { name: operatorName });
+    }
     updateTopbarButtons();
   });
 
   socket.on('operator_id', ({ id }) => {
     operatorId = id;
+    localStorage.setItem('whatsapp_relay_operator_id', id);
     if (!operatorName) {
       document.getElementById('operatorBadge').textContent = 'op://' + id.toLowerCase();
     }
   });
 
-  socket.on('status', ({status}) => {
+  socket.on('status', ({status, connectorOperatorId: connId, connectorOperatorName: connName}) => {
     connectionStatus = status;
+    if (connId !== undefined) connectorOperatorId = connId;
+    if (connName !== undefined) connectorOperatorName = connName;
     if (status==='connected') { updateStatus('connected', 'WhatsApp Live'); document.getElementById('qrOverlay').classList.add('hidden'); }
     else if (status==='connecting'||status==='qr_ready') updateStatus('connecting', 'Connecting...');
     else updateStatus('disconnected', 'WA Disconnected');

@@ -93,6 +93,9 @@ const jidToLid = {};  // "91987...@s.whatsapp.net" -> "hex123@lid"
 
 // Operator registry
 const operators = new Map(); // socketId -> { id, name, connectedAt, socketId }
+let connectorOperatorId = null;
+let connectorOperatorName = null;
+let linkingOperator = null;
 
 // Persistence
 const STORE_FILE = path.join(ROOT_DIR, 'store.json');
@@ -185,6 +188,10 @@ class RelayDatabase {
         payload TEXT NOT NULL,
         updated_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS bridge_metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT
+      );
       CREATE INDEX IF NOT EXISTS idx_messages_jid_timestamp
       ON messages(jid, timestamp, id);
     `);
@@ -246,6 +253,12 @@ class RelayDatabase {
     this.allContactsStmt = this.db.prepare('SELECT payload FROM contacts');
     this.allChatsStmt = this.db.prepare('SELECT payload FROM chats ORDER BY timestamp DESC, id DESC');
     this.allMessagesStmt = this.db.prepare('SELECT payload FROM messages ORDER BY jid ASC, timestamp ASC, id ASC');
+    this.getMetadataStmt = this.db.prepare('SELECT value FROM bridge_metadata WHERE key = ?');
+    this.setMetadataStmt = this.db.prepare(`
+      INSERT INTO bridge_metadata (key, value)
+      VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `);
     this.inTransaction = this.db.transaction((contacts, chats, messages) => {
       for (const contact of contacts) this.upsertContact(contact);
       for (const chat of chats) this.upsertChat(chat);
@@ -266,6 +279,24 @@ class RelayDatabase {
     const chats = this.allChatsStmt.all().map((row) => normalizeChat(JSON.parse(row.payload)));
     const messages = this.allMessagesStmt.all().map((row) => normalizeMessageRecord(JSON.parse(row.payload)));
     return { contacts, chats, messages };
+  }
+
+  getMetadata(key) {
+    try {
+      const row = this.getMetadataStmt.get(key);
+      return row ? row.value : null;
+    } catch (e) {
+      console.error('[Database] getMetadata error:', e.message);
+      return null;
+    }
+  }
+
+  setMetadata(key, value) {
+    try {
+      this.setMetadataStmt.run(key, value);
+    } catch (e) {
+      console.error('[Database] setMetadata error:', e.message);
+    }
   }
 
   upsertContact(contact) {
@@ -368,9 +399,14 @@ function loadStore() {
       if (!messageStore[msg.jid]) messageStore[msg.jid] = [];
       messageStore[msg.jid].push(msg);
     }
+    connectorOperatorId = database.getMetadata('connector_operator_id');
+    connectorOperatorName = database.getMetadata('connector_operator_name');
     console.log(
       `[Bridge] Loaded SQLite store: ${Object.keys(chatStore).length} chats, ${Object.keys(contactStore).length} contacts, ${Object.keys(messageStore).length} message threads, ${Object.keys(lidToJid).length} lid mappings`
     );
+    if (connectorOperatorId) {
+      console.log(`[Bridge] Loaded connector operator: ${connectorOperatorName} (${connectorOperatorId})`);
+    }
   } catch (e) {
     console.error('[Bridge] Failed to load store:', e.message);
   }
@@ -722,9 +758,16 @@ async function disconnectWhatsApp() {
     }
   }
 
+  // Clear connector operator
+  database.setMetadata('connector_operator_id', null);
+  database.setMetadata('connector_operator_name', null);
+  connectorOperatorId = null;
+  connectorOperatorName = null;
+  linkingOperator = null;
+
   connectionStatus = 'disconnected';
   qrCodeData = null;
-  io.emit('status', { status: 'disconnected' });
+  io.emit('status', { status: 'disconnected', connectorOperatorId, connectorOperatorName });
   io.emit('qr', null);
 
   console.log('[Bridge] Restarting connection after disconnect to prepare QR code...');
@@ -770,7 +813,7 @@ async function connectToWhatsApp() {
       if (connection === 'close') {
         const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
         connectionStatus = 'disconnected';
-        io.emit('status', { status: 'disconnected', reason });
+        io.emit('status', { status: 'disconnected', reason, connectorOperatorId, connectorOperatorName });
         if (reason !== DisconnectReason.loggedOut) scheduleReconnect();
       }
 
@@ -778,7 +821,16 @@ async function connectToWhatsApp() {
         connectionStatus = 'connected';
         qrCodeData = null;
         reconnectDelay = 5000;
-        io.emit('status', { status: 'connected' });
+        
+        if (linkingOperator) {
+          database.setMetadata('connector_operator_id', linkingOperator.id);
+          database.setMetadata('connector_operator_name', linkingOperator.name);
+          connectorOperatorId = linkingOperator.id;
+          connectorOperatorName = linkingOperator.name;
+          linkingOperator = null;
+        }
+
+        io.emit('status', { status: 'connected', connectorOperatorId, connectorOperatorName });
         console.log('[Bridge] Connected to WhatsApp!');
         await loadGroups();
         backfillContactNames();
@@ -1125,9 +1177,13 @@ async function loadGroups() {
 
 const notConnected = (res) => res.status(503).json({ error: 'Not connected to WhatsApp' });
 
-app.get('/api/status', (req, res) => res.json({ status: connectionStatus, qr: qrCodeData }));
+app.get('/api/status', (req, res) => res.json({ status: connectionStatus, qr: qrCodeData, connectorOperatorId, connectorOperatorName }));
 app.post('/api/whatsapp/disconnect', async (req, res) => {
   try {
+    const operator = getOperatorFromRequest(req);
+    if (connectorOperatorId && (!operator || operator.id !== connectorOperatorId)) {
+      return res.status(403).json({ error: 'Only the operator who connected WhatsApp first can disconnect it.' });
+    }
     await disconnectWhatsApp();
     res.json({ success: true, message: 'WhatsApp session disconnected and reset.' });
   } catch (err) {
@@ -1460,12 +1516,21 @@ app.post('/api/groups/create', async (req, res) => {
 io.on('connection', (socket) => {
   console.log(`[Bridge] Operator connected: ${socket.id}`);
 
-  const opId = `OP-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
-  operators.set(socket.id, { id: opId, name: opId, connectedAt: new Date().toISOString(), socketId: socket.id });
+  let opId = socket.handshake.query.operatorId;
+  let opName = socket.handshake.query.operatorName;
+
+  if (!opId || opId === 'undefined' || opId === 'null') {
+    opId = `OP-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+  }
+  if (!opName || opName === 'undefined' || opName === 'null') {
+    opName = opId;
+  }
+
+  operators.set(socket.id, { id: opId, name: opName, connectedAt: new Date().toISOString(), socketId: socket.id });
   broadcastOperators();
   socket.emit('operator_id', { id: opId });
 
-  socket.emit('status', { status: connectionStatus });
+  socket.emit('status', { status: connectionStatus, connectorOperatorId, connectorOperatorName });
   if (qrCodeData) socket.emit('qr', qrCodeData);
   socket.emit('groups', Object.values(groupStore));
   socket.emit('chats', sortedChats());
@@ -1478,6 +1543,11 @@ io.on('connection', (socket) => {
     }
     broadcastOperators();
     socket.emit('chats', sortedChats());
+  });
+
+  socket.on('linking_whatsapp', ({ operatorId, operatorName }) => {
+    linkingOperator = { id: operatorId, name: operatorName };
+    console.log(`[Bridge] Operator ${operatorName || operatorId} is scanning/linking WhatsApp`);
   });
 
   socket.on('claim_chat', ({ jid }) => {
