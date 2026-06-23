@@ -110,8 +110,21 @@ function toTimestamp(ts) {
 }
 
 function normalizeChat(chat = {}) {
+  let phone = null;
+  const id = chat.id;
+  if (id) {
+    if (id.endsWith('@s.whatsapp.net')) {
+      phone = id.split('@')[0];
+    } else if (id.endsWith('@lid')) {
+      const phoneJid = lidToJid[id];
+      if (phoneJid) {
+        phone = phoneJid.split('@')[0];
+      }
+    }
+  }
   return {
     ...chat,
+    phone: phone || chat.phone || null,
     unreadCount: Number(chat.unreadCount || 0),
     timestamp: toTimestamp(chat.timestamp),
     lastMsg: chat.lastMsg || '',
@@ -413,7 +426,7 @@ function loadStore() {
 }
 
 function sortedChats() {
-  return Object.values(chatStore).sort((a, b) => toTimestamp(b.timestamp) - toTimestamp(a.timestamp));
+  return Object.values(chatStore).map(normalizeChat).sort((a, b) => toTimestamp(b.timestamp) - toTimestamp(a.timestamp));
 }
 
 function resolveContactName(jid) {
@@ -1252,7 +1265,7 @@ app.get('/api/messages', (req, res) => {
   }
   const total = msgs.length;
   const sliced = msgs.slice(-Number(limit));
-  res.json({ messages: sliced, hasMore: total > sliced.length, total, chat: chatStore[jid] || null });
+  res.json({ messages: sliced, hasMore: total > sliced.length, total, chat: normalizeChat(chatStore[jid]) || null });
 });
 
 app.post('/api/chats/:jid/claim', (req, res) => {
@@ -1597,7 +1610,7 @@ io.on('connection', (socket) => {
       messages: sliced,
       hasMore: msgs.length > limit,
       total: msgs.length,
-      chat: chatStore[jid] || null,
+      chat: normalizeChat(chatStore[jid]) || null,
     });
   });
 

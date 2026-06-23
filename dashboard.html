@@ -597,7 +597,7 @@ function renderChatHeader() {
 
   const meta = activeChat.type === 'group'
     ? `${activeChat.participants || '?'} participants`
-    : activeChat.id;
+    : (activeChat.phone ? '+' + activeChat.phone : (activeChat.id ? (activeChat.id.endsWith('@s.whatsapp.net') ? '+' + activeChat.id.split('@')[0] : activeChat.id) : ''));
   document.getElementById('chatTopAvatar').textContent = (activeChat.name || '?')[0].toUpperCase();
   document.getElementById('chatTopName').textContent = activeChat.name || activeChat.id;
   document.getElementById('chatTopMeta').textContent = meta;
@@ -982,7 +982,9 @@ function appendMessage(msg, scroll=true, prepend=false) {
   row.className = 'message-row ' + (outgoing?'outgoing':'incoming');
   const initial = outgoing
     ? (msg.operatorName?.[0]?.toUpperCase() || operatorName[0] || '?')
-    : (msg.sender?.[0]?.toUpperCase() || msg.participant?.[0]?.toUpperCase() || '?');
+    : (activeChat && activeChat.type !== 'group' && activeChat.name
+        ? activeChat.name[0].toUpperCase()
+        : (msg.sender?.[0]?.toUpperCase() || msg.participant?.[0]?.toUpperCase() || '?'));
   const senderName = outgoing
     ? (msg.operatorName || msg.sender || 'Unknown')
     : (msg.sender || (msg.participant ? msg.participant.split('@')[0] : 'Unknown'));
