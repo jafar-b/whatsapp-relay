@@ -42,6 +42,8 @@
   .btn-ghost-sm:hover { border-color:var(--accent); color:var(--accent); }
   .btn-save { background:var(--accent2); color:#fff; padding:7px 16px; border-radius:6px; font-size:12px; font-weight:600; font-family:'Syne',sans-serif; cursor:pointer; border:none; transition:all 0.15s; }
   .btn-save:hover { opacity:0.85; }
+  .btn-danger { background:var(--danger); color:#fff; }
+  .btn-danger:hover { opacity:0.85; transform:translateY(-1px); }
   .topbar-right { display:flex; align-items:center; gap:12px; }
   .operator-badge { font-size:12px; color:var(--muted); font-family:'IBM Plex Mono',monospace; }
 
@@ -49,7 +51,17 @@
   .main { display:grid; grid-template-columns:260px 1fr 300px; flex:1; overflow:hidden; }
 
   /* Sidebar */
-  .sidebar { background:var(--surface); border-right:1px solid var(--border); display:flex; flex-direction:column; overflow:hidden; }
+  .sidebar { background:var(--surface); border-right:1px solid var(--border); display:flex; flex-direction:column; overflow:hidden; position:relative; }
+  .sidebar-resizer { position:absolute; top:0; right:0; width:4px; height:100%; cursor:ew-resize; z-index:10; transition:background 0.15s; }
+  .sidebar-resizer:hover, .sidebar-resizer.resizing { background:var(--accent); }
+  
+  .sidebar-tabs { display:flex; flex-wrap:wrap; border-bottom:1px solid var(--border); background:var(--surface); padding:8px; gap:8px; }
+  .tab-btn { flex:1 0 calc(50% - 4px); padding:8px; border-radius:6px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; text-align:center; background:var(--surface2); color:var(--muted); border:1px solid var(--border); cursor:pointer; transition:all 0.15s; font-family:'Syne',sans-serif; }
+  .tab-btn:hover { color:var(--text); border-color:var(--muted); }
+  .tab-btn.active { color:#000; background:var(--accent); border-color:var(--accent); }
+  
+  .chat-avatar.channel { background:linear-gradient(135deg,#e11d48,#f59e0b); }
+  .chat-avatar.status { background:linear-gradient(135deg,#10b981,#059669); }
   .sidebar-header { padding:16px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; }
   .sidebar-title { font-size:11px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:var(--muted); }
   .count-badge { font-size:10px; font-family:'IBM Plex Mono',monospace; background:var(--surface2); border:1px solid var(--border); color:var(--muted); padding:2px 8px; border-radius:10px; }
@@ -280,7 +292,8 @@
 
 <!-- QR Overlay -->
 <div class="qr-overlay hidden" id="qrOverlay">
-  <div class="qr-card">
+  <div class="qr-card" style="position: relative;">
+    <div class="lightbox-close" style="top: 15px; right: 20px; font-size: 20px;" onclick="hideQrOverlay()">✕</div>
     <div class="qr-title">Connect WhatsApp</div>
     <div class="qr-subtitle">Scan this QR code with your WhatsApp to link the relay bridge</div>
     <div class="qr-image-wrap"><img id="qrImage" src="" alt="QR Code"></div>
@@ -315,6 +328,7 @@
   <div class="topbar-right">
     <div class="operator-badge" id="operatorBadge">op://—</div>
     <button class="btn btn-ghost" onclick="connectBridge()">Connect Bridge</button>
+    <span id="whatsappControlContainer"></span>
     <button class="btn btn-primary" onclick="switchToCreate()">+ New Group</button>
   </div>
 </div>
@@ -323,13 +337,20 @@
 <div class="main">
 
   <!-- Sidebar -->
-  <div class="sidebar">
+  <div class="sidebar" style="position: relative;">
+    <div class="sidebar-resizer" id="sidebarResizer"></div>
     <div class="sidebar-header">
       <div class="sidebar-title">Conversations</div>
       <div class="count-badge" id="chatCount">0</div>
     </div>
     <div class="search-wrap">
       <input class="search-input" id="searchInput" placeholder="Search contacts…" oninput="onSearch(this.value)" autocomplete="off">
+    </div>
+    <div class="sidebar-tabs">
+      <button class="tab-btn active" id="tabChats" onclick="switchSidebarTab('chats')">Chats</button>
+      <button class="tab-btn" id="tabGroups" onclick="switchSidebarTab('groups')">Groups</button>
+      <button class="tab-btn" id="tabChannels" onclick="switchSidebarTab('channels')">Channels</button>
+      <button class="tab-btn" id="tabStatus" onclick="switchSidebarTab('status')">Status</button>
     </div>
     <div class="search-results" id="searchResults"></div>
     <div class="chat-list" id="chatList"></div>
@@ -667,32 +688,102 @@ function openLightbox(src) {
 function closeLightbox() { document.getElementById('lightbox').classList.add('hidden'); }
 
 // ─── Chat List ────────────────────────────────────────────────────────────────
+let activeSidebarTab = 'chats';
+
+function switchSidebarTab(tab) {
+  activeSidebarTab = tab;
+  document.querySelectorAll('.sidebar-tabs .tab-btn').forEach(btn => {
+    btn.classList.remove('active');
+  });
+  const btnId = 'tab' + tab.charAt(0).toUpperCase() + tab.slice(1);
+  const activeBtn = document.getElementById(btnId);
+  if (activeBtn) activeBtn.classList.add('active');
+  renderChatList(allChats);
+}
+
+function initSidebarResize() {
+  const resizer = document.getElementById('sidebarResizer');
+  const main = document.querySelector('.main');
+  if (!resizer || !main) return;
+  
+  let isResizing = false;
+  
+  resizer.addEventListener('mousedown', (e) => {
+    isResizing = true;
+    resizer.classList.add('resizing');
+    document.body.style.cursor = 'ew-resize';
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+  
+  document.addEventListener('mousemove', (e) => {
+    if (!isResizing) return;
+    const mainRect = main.getBoundingClientRect();
+    let newWidth = e.clientX - mainRect.left;
+    if (newWidth < 180) newWidth = 180;
+    if (newWidth > 450) newWidth = 450;
+    main.style.gridTemplateColumns = `${newWidth}px 1fr 300px`;
+  });
+  
+  document.addEventListener('mouseup', () => {
+    if (isResizing) {
+      isResizing = false;
+      resizer.classList.remove('resizing');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    }
+  });
+}
+
 function renderChatList(chats) {
   allChats = chats || [];
   const list = document.getElementById('chatList');
   list.innerHTML = '';
-  document.getElementById('chatCount').textContent = allChats.length;
-  document.getElementById('statGroups').textContent = allChats.filter(c=>c.type==='group').length;
-  allChats.forEach(chat => {
+
+  let filteredChats = allChats;
+  if (activeSidebarTab === 'chats') {
+    filteredChats = allChats.filter(c => c.type !== 'group' && !c.id.endsWith('@g.us') && !c.id.endsWith('@newsletter') && !c.id.endsWith('@broadcast'));
+  } else if (activeSidebarTab === 'groups') {
+    filteredChats = allChats.filter(c => c.type === 'group' || c.id.endsWith('@g.us'));
+  } else if (activeSidebarTab === 'channels') {
+    filteredChats = allChats.filter(c => c.type === 'channel' || c.id.endsWith('@newsletter'));
+  } else if (activeSidebarTab === 'status') {
+    filteredChats = allChats.filter(c => c.id.endsWith('@broadcast'));
+  }
+
+  document.getElementById('chatCount').textContent = filteredChats.length;
+  document.getElementById('statGroups').textContent = allChats.filter(c => c.type === 'group' || c.id.endsWith('@g.us')).length;
+
+  filteredChats.forEach(chat => {
     const assigneeClass = isAssignedToMe(chat) ? 'chat-assignee mine' : (isAssignedToOther(chat) ? 'chat-assignee locked' : 'chat-assignee');
-    const assigneeLabel = chat.type === 'group' ? '' : `<div class="${assigneeClass}">${!chat.assignedOperatorId ? 'Open' : (isAssignedToMe(chat) ? 'Mine' : (chat.assignedOperatorName || 'Locked'))}</div>`;
+    const isGroupChat = chat.type === 'group' || chat.id.endsWith('@g.us');
+    const assigneeLabel = isGroupChat ? '' : `<div class="${assigneeClass}">${!chat.assignedOperatorId ? 'Open' : (isAssignedToMe(chat) ? 'Mine' : (chat.assignedOperatorName || 'Locked'))}</div>`;
     const item = document.createElement('div');
-    item.className = 'chat-item' + (activeChat?.id===chat.id?' active':'');
+    item.className = 'chat-item' + (activeChat?.id === chat.id ? ' active' : '');
+    item.setAttribute('data-jid', chat.id);
     item.onclick = () => openChat(chat, item);
+    
+    let displayName = chat.name || chat.id;
+    if (chat.id === 'status@broadcast') {
+      displayName = 'Status Updates';
+    } else if (chat.id.endsWith('@newsletter') && !chat.name) {
+      displayName = 'Channel: ' + chat.id.split('@')[0];
+    }
+    const avatarType = chat.id.endsWith('@newsletter') ? 'channel' : (chat.id.endsWith('@broadcast') ? 'status' : (isGroupChat ? 'group' : 'personal'));
+
     item.innerHTML = `
-      <div class="chat-avatar ${chat.type||'personal'}">${(chat.name||'?')[0].toUpperCase()}</div>
+      <div class="chat-avatar ${avatarType}">${(displayName||'?')[0].toUpperCase()}</div>
       <div class="chat-info">
         <div class="chat-name-row">
-          <div class="chat-name">${chat.name||chat.id}</div>
+          <div class="chat-name">${displayName}</div>
           ${assigneeLabel}
         </div>
         <div class="chat-preview">${chat.lastMsg||chat.preview||''}</div>
       </div>
-      ${chat.unread||chat.unreadCount?'<div class="unread-dot"></div>':''}
+      ${chat.unread||chat.unreadCount ? '<div class="unread-dot"></div>' : ''}
     `;
     list.appendChild(item);
   });
-  document.getElementById('statGroups').textContent = allChats.filter(c=>c.type==='group').length;
 }
 
 // ─── Search ───────────────────────────────────────────────────────────────────
@@ -735,7 +826,22 @@ function openChatById(id, name) {
   document.getElementById('searchInput').value = '';
   document.getElementById('searchResults').classList.remove('visible');
   const existing = allChats.find(c => c.id === id);
-  const chat = existing || { id, name, type: id.endsWith('@g.us') ? 'group' : 'personal', lastMsg: '' };
+  let type = 'personal';
+  if (id.endsWith('@g.us')) type = 'group';
+  else if (id.endsWith('@newsletter')) type = 'channel';
+  else if (id.endsWith('@broadcast')) type = 'status';
+  
+  if (type === 'group') {
+    switchSidebarTab('groups');
+  } else if (type === 'channel') {
+    switchSidebarTab('channels');
+  } else if (type === 'status') {
+    switchSidebarTab('status');
+  } else {
+    switchSidebarTab('chats');
+  }
+  
+  const chat = existing || { id, name, type, lastMsg: '' };
   openChat(chat, null);
 }
 
@@ -763,15 +869,11 @@ function openChat(chat, itemEl) {
 }
 
 function updateChatItemHighlight() {
-  document.querySelectorAll('.chat-item').forEach(el => el.classList.remove('active'));
-  if (!activeChat) return;
-  const items = document.querySelectorAll('.chat-item');
-  items.forEach(el => {
-    if (el.querySelector('.chat-name')?.textContent === activeChat.name) el.classList.add('active');
-    else {
-      const preview = el.querySelector('.chat-preview')?.textContent;
-      const lastMsg = el.getAttribute('data-lastmsg');
-      // Poor-man's match by name+preview combo
+  document.querySelectorAll('.chat-item').forEach(el => {
+    if (activeChat && el.getAttribute('data-jid') === activeChat.id) {
+      el.classList.add('active');
+    } else {
+      el.classList.remove('active');
     }
   });
 }
@@ -1394,7 +1496,51 @@ async function createGroup() {
 }
 
 // ─── Bridge Connection ────────────────────────────────────────────────────────
-function connectBridge() {
+let connectionStatus = 'disconnected';
+let latestQrData = null;
+
+function updateTopbarButtons() {
+  const container = document.getElementById('whatsappControlContainer');
+  if (!container) return;
+
+  if (!socket || !socket.connected) {
+    container.innerHTML = '';
+    return;
+  }
+
+  if (connectionStatus === 'connected') {
+    container.innerHTML = `<button class="btn btn-danger" onclick="confirmDisconnectWhatsApp()">Disconnect WA</button>`;
+  } else {
+    container.innerHTML = `<button class="btn btn-primary" onclick="linkWhatsApp()">Link WhatsApp</button>`;
+  }
+}
+
+function confirmDisconnectWhatsApp() {
+  showConfirm('Are you sure you want to disconnect WhatsApp? This will log you out and require scanning a new QR code to reconnect.', async () => {
+    try {
+      const res = await fetch(`${bridgeUrl}/api/whatsapp/disconnect`, { method: 'POST' });
+      if (!res.ok) {
+        throw new Error('Failed to disconnect WhatsApp');
+      }
+      showToast('Disconnect request sent.');
+    } catch (e) {
+      showToast(e.message, 'error');
+    }
+  });
+}
+
+function linkWhatsApp() {
+  document.getElementById('qrOverlay').classList.remove('hidden');
+  if (!latestQrData) {
+    showToast('Waiting for QR code to generate...', 'info');
+  }
+}
+
+function hideQrOverlay() {
+  document.getElementById('qrOverlay').classList.add('hidden');
+}
+
+async function connectBridge() {
   const url = prompt('Bridge server URL:', bridgeUrl);
   if (!url) return;
   const normalized = normalizeBridgeUrl(url);
@@ -1402,6 +1548,37 @@ function connectBridge() {
     showToast('Invalid bridge URL. Example: http://localhost:3001', 'error');
     return;
   }
+
+  const isCurrentWaConnected = (connectionStatus === 'connected');
+  let isNewBridgeWaConnected = false;
+
+  try {
+    const res = await fetch(`${normalized}/api/status`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.status === 'connected') {
+        isNewBridgeWaConnected = true;
+      }
+    }
+  } catch (err) {
+    console.error('Error querying status of new bridge:', err);
+  }
+
+  if (isCurrentWaConnected && isNewBridgeWaConnected && normalized !== bridgeUrl) {
+    try {
+      showToast('Disconnecting current WhatsApp login...', 'info');
+      await fetch(`${bridgeUrl}/api/whatsapp/disconnect`, { method: 'POST' });
+      showToast('Current WhatsApp login disconnected.');
+    } catch (e) {
+      console.error('Error disconnecting current WhatsApp:', e);
+      showToast('Failed to disconnect current WhatsApp login, connecting to new bridge anyway.', 'warn');
+    }
+  }
+
+  connectBridgeDirect(normalized);
+}
+
+function connectBridgeDirect(normalized) {
   bridgeUrl = normalized;
 
   if (socket) { socket.disconnect(); }
@@ -1412,6 +1589,7 @@ function connectBridge() {
     updateStatus('connecting', 'Bridge Connected');
     showToast('Bridge server connected!');
     promptOperatorName();
+    updateTopbarButtons();
   });
 
   socket.on('operator_id', ({ id }) => {
@@ -1422,14 +1600,16 @@ function connectBridge() {
   });
 
   socket.on('status', ({status}) => {
+    connectionStatus = status;
     if (status==='connected') { updateStatus('connected', 'WhatsApp Live'); document.getElementById('qrOverlay').classList.add('hidden'); }
     else if (status==='connecting'||status==='qr_ready') updateStatus('connecting', 'Connecting...');
     else updateStatus('disconnected', 'WA Disconnected');
+    updateTopbarButtons();
   });
 
   socket.on('qr', qrData => {
-    document.getElementById('qrImage').src = qrData;
-    document.getElementById('qrOverlay').classList.remove('hidden');
+    latestQrData = qrData;
+    document.getElementById('qrImage').src = qrData || '';
   });
 
   socket.on('operators', (ops) => {
@@ -1558,6 +1738,8 @@ function connectBridge() {
   socket.on('disconnect', () => {
     updateStatus('disconnected', 'Disconnected');
     showToast('Bridge disconnected', 'error');
+    connectionStatus = 'disconnected';
+    updateTopbarButtons();
   });
 }
 
@@ -1567,6 +1749,11 @@ document.getElementById('operatorBadge').textContent = 'op://offline';
 document.getElementById('chatList').innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted);font-size:12px">Click "Connect Bridge" to start</div>';
 renderPanel();
 renderChatHeader();
+
+// Auto-connect to bridge on load
+const currentOrigin = window.location.protocol.startsWith('http') ? window.location.origin : bridgeUrl;
+connectBridgeDirect(currentOrigin);
+initSidebarResize();
 </script>
 </body>
 </html>

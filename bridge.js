@@ -597,149 +597,225 @@ loadStore();
 
 let reconnectDelay = 5000;
 const MAX_RECONNECT_DELAY = 300000;
+let reconnectTimer = null;
+let isConnecting = false;
 
 function scheduleReconnect() {
+  if (reconnectTimer) clearTimeout(reconnectTimer);
   console.log(`[Bridge] Reconnecting in ${reconnectDelay / 1000}s...`);
-  setTimeout(() => connectToWhatsApp(), reconnectDelay);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connectToWhatsApp();
+  }, reconnectDelay);
   reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY);
+}
+
+async function disconnectWhatsApp() {
+  console.log('[Bridge] Disconnecting WhatsApp session...');
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
+  if (sock) {
+    try {
+      await sock.logout();
+    } catch (err) {
+      console.error('[Bridge] Error during sock.logout():', err.message);
+      try {
+        sock.end();
+      } catch (e) {
+        console.error('[Bridge] Error ending socket:', e.message);
+      }
+    }
+    sock = null;
+  }
+
+  const authPaths = [
+    path.join(ROOT_DIR, 'auth_info'),
+    path.resolve('./auth_info')
+  ];
+  for (const authPath of authPaths) {
+    if (fs.existsSync(authPath)) {
+      try {
+        fs.rmSync(authPath, { recursive: true, force: true });
+        console.log(`[Bridge] Cleared credentials directory at ${authPath}`);
+      } catch (e) {
+        console.error(`[Bridge] Error clearing directory ${authPath}:`, e.message);
+      }
+    }
+  }
+
+  connectionStatus = 'disconnected';
+  qrCodeData = null;
+  io.emit('status', { status: 'disconnected' });
+  io.emit('qr', null);
+
+  console.log('[Bridge] Restarting connection after disconnect to prepare QR code...');
+  await connectToWhatsApp();
 }
 
 // WhatsApp connection
 async function connectToWhatsApp() {
-  const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
-  const { version } = await fetchLatestWaWebVersion();
-  console.log(`[Bridge] Using WA version: ${version.join('.')}`);
-  sock = makeWASocket({ version, auth: state, printQRInTerminal: false, syncFullHistory: true });
-  sock.ev.on('creds.update', saveCreds);
-
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update;
-
-    if (qr) {
-      qrCodeData = await QRCode.toDataURL(qr);
-      connectionStatus = 'qr_ready';
-      io.emit('qr', qrCodeData);
+  if (isConnecting) {
+    console.log('[Bridge] Connection attempt already in progress.');
+    return;
+  }
+  isConnecting = true;
+  try {
+    if (sock) {
+      console.log('[Bridge] Closing existing socket before connecting...');
+      try { sock.end(); } catch (e) {}
+      sock = null;
     }
 
-    if (connection === 'close') {
-      const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
-      connectionStatus = 'disconnected';
-      io.emit('status', { status: 'disconnected', reason });
-      if (reason !== DisconnectReason.loggedOut) scheduleReconnect();
+    const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
+    let version;
+    try {
+      const waVersion = await fetchLatestWaWebVersion();
+      version = waVersion.version;
+    } catch (e) {
+      console.warn('[Bridge] Failed to fetch latest WA web version, using fallback:', e.message);
+      version = [2, 3000, 1015901307];
     }
+    console.log(`[Bridge] Using WA version: ${version.join('.')}`);
+    sock = makeWASocket({ version, auth: state, printQRInTerminal: false, syncFullHistory: true });
+    sock.ev.on('creds.update', saveCreds);
 
-    if (connection === 'open') {
-      connectionStatus = 'connected';
-      qrCodeData = null;
-      reconnectDelay = 5000;
-      io.emit('status', { status: 'connected' });
-      console.log('[Bridge] Connected to WhatsApp!');
-      await loadGroups();
-      backfillContactNames();
-    }
-  });
+    sock.ev.on('connection.update', async (update) => {
+      const { connection, lastDisconnect, qr } = update;
 
-  sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify') return;
-    for (const msg of messages) {
-      if (!msg.message) continue;
-      const parsed = normalizeMessageRecord(await parseMessage(msg));
-      const thread = messageStore[parsed.jid] || [];
-      if (thread.some((existing) => existing.id === parsed.id)) continue;
-      addMessageToStore(parsed);
-      io.emit('message', parsed);
-      const contact = contactStore[parsed.jid];
-      const isGroup = parsed.jid?.endsWith('@g.us');
-      if (!chatStore[parsed.jid]) {
-        chatStore[parsed.jid] = normalizeChat({
-          id: parsed.jid,
-          name: contact?.name || contact?.notify || parsed.jid?.split('@')[0] || parsed.jid,
-          type: isGroup ? 'group' : 'personal',
-          unreadCount: 0,
-          timestamp: parsed.timestamp,
-          lastMsg: parsed.content,
-        });
-      } else {
-        chatStore[parsed.jid].lastMsg = parsed.content;
-        chatStore[parsed.jid].timestamp = parsed.timestamp;
-        if (!chatStore[parsed.jid].name || chatStore[parsed.jid].name === parsed.jid?.split('@')[0]) {
-          chatStore[parsed.jid].name = contact?.name || contact?.notify || chatStore[parsed.jid].name;
+      if (qr) {
+        qrCodeData = await QRCode.toDataURL(qr);
+        connectionStatus = 'qr_ready';
+        io.emit('qr', qrCodeData);
+      }
+
+      if (connection === 'close') {
+        const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
+        connectionStatus = 'disconnected';
+        io.emit('status', { status: 'disconnected', reason });
+        if (reason !== DisconnectReason.loggedOut) scheduleReconnect();
+      }
+
+      if (connection === 'open') {
+        connectionStatus = 'connected';
+        qrCodeData = null;
+        reconnectDelay = 5000;
+        io.emit('status', { status: 'connected' });
+        console.log('[Bridge] Connected to WhatsApp!');
+        await loadGroups();
+        backfillContactNames();
+      }
+    });
+
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      if (type !== 'notify') return;
+      for (const msg of messages) {
+        if (!msg.message) continue;
+        const parsed = normalizeMessageRecord(await parseMessage(msg));
+        const thread = messageStore[parsed.jid] || [];
+        if (thread.some((existing) => existing.id === parsed.id)) continue;
+        addMessageToStore(parsed);
+        io.emit('message', parsed);
+        const contact = contactStore[parsed.jid];
+        const isGroup = parsed.jid?.endsWith('@g.us');
+        if (!chatStore[parsed.jid]) {
+          chatStore[parsed.jid] = normalizeChat({
+            id: parsed.jid,
+            name: contact?.name || contact?.notify || parsed.jid?.split('@')[0] || parsed.jid,
+            type: isGroup ? 'group' : 'personal',
+            unreadCount: 0,
+            timestamp: parsed.timestamp,
+            lastMsg: parsed.content,
+          });
+        } else {
+          chatStore[parsed.jid].lastMsg = parsed.content;
+          chatStore[parsed.jid].timestamp = parsed.timestamp;
+          if (!chatStore[parsed.jid].name || chatStore[parsed.jid].name === parsed.jid?.split('@')[0]) {
+            chatStore[parsed.jid].name = contact?.name || contact?.notify || chatStore[parsed.jid].name;
+          }
         }
+        broadcastChats();
+        saveStore();
+      }
+    });
+
+    sock.ev.on('groups.update', (updates) => {
+      for (const update of updates) {
+        if (groupStore[update.id]) groupStore[update.id] = { ...groupStore[update.id], ...update };
+        io.emit('group_update', update);
+      }
+    });
+
+    sock.ev.on('contacts.upsert', (contacts) => {
+      for (const contact of contacts) {
+        contactStore[contact.id] = { ...contactStore[contact.id], ...contact };
+        database.upsertContact(contactStore[contact.id]);
+      }
+      backfillContactNames();
+      saveStore();
+    });
+
+    sock.ev.on('contacts.update', (updates) => {
+      for (const update of updates) {
+        if (contactStore[update.id]) Object.assign(contactStore[update.id], update);
+        else contactStore[update.id] = update;
+        database.upsertContact(contactStore[update.id]);
+      }
+      backfillContactNames();
+      saveStore();
+    });
+
+    sock.ev.on('messaging-history.set', ({ chats, contacts }) => {
+      for (const contact of contacts || []) {
+        contactStore[contact.id] = { ...contactStore[contact.id], ...contact };
+        database.upsertContact(contactStore[contact.id]);
+      }
+      for (const chat of chats || []) {
+        const isGroup = chat.id.endsWith('@g.us');
+        const contact = contactStore[chat.id];
+        const ts = toTimestamp(chat.conversationTimestamp);
+        chatStore[chat.id] = normalizeChat({
+          ...chatStore[chat.id],
+          id: chat.id,
+          name: chat.name || contact?.name || contact?.notify || contact?.verifiedName || chat.id.split('@')[0],
+          type: isGroup ? 'group' : 'personal',
+          unreadCount: chat.unreadCount || 0,
+          timestamp: ts,
+          lastMsg: chatStore[chat.id]?.lastMsg || '',
+        });
+        database.upsertChat(chatStore[chat.id]);
+      }
+      broadcastChats();
+      backfillContactNames();
+      saveStore();
+      console.log(`[Bridge] History sync: ${chats?.length || 0} chats, ${contacts?.length || 0} contacts`);
+    });
+
+    sock.ev.on('chats.upsert', (chats) => {
+      for (const chat of chats) {
+        const isGroup = chat.id.endsWith('@g.us');
+        const contact = contactStore[chat.id];
+        chatStore[chat.id] = normalizeChat({
+          ...chatStore[chat.id],
+          id: chat.id,
+          name: chat.name || contact?.name || contact?.notify || contact?.verifiedName || chat.id.split('@')[0],
+          type: isGroup ? 'group' : 'personal',
+          unreadCount: chat.unreadCount || 0,
+          timestamp: toTimestamp(chat.conversationTimestamp),
+        });
+        database.upsertChat(chatStore[chat.id]);
       }
       broadcastChats();
       saveStore();
-    }
-  });
-
-  sock.ev.on('groups.update', (updates) => {
-    for (const update of updates) {
-      if (groupStore[update.id]) groupStore[update.id] = { ...groupStore[update.id], ...update };
-      io.emit('group_update', update);
-    }
-  });
-
-  sock.ev.on('contacts.upsert', (contacts) => {
-    for (const contact of contacts) {
-      contactStore[contact.id] = { ...contactStore[contact.id], ...contact };
-      database.upsertContact(contactStore[contact.id]);
-    }
-    backfillContactNames();
-    saveStore();
-  });
-
-  sock.ev.on('contacts.update', (updates) => {
-    for (const update of updates) {
-      if (contactStore[update.id]) Object.assign(contactStore[update.id], update);
-      else contactStore[update.id] = update;
-      database.upsertContact(contactStore[update.id]);
-    }
-    backfillContactNames();
-    saveStore();
-  });
-
-  sock.ev.on('messaging-history.set', ({ chats, contacts }) => {
-    for (const contact of contacts || []) {
-      contactStore[contact.id] = { ...contactStore[contact.id], ...contact };
-      database.upsertContact(contactStore[contact.id]);
-    }
-    for (const chat of chats || []) {
-      const isGroup = chat.id.endsWith('@g.us');
-      const contact = contactStore[chat.id];
-      const ts = toTimestamp(chat.conversationTimestamp);
-      chatStore[chat.id] = normalizeChat({
-        ...chatStore[chat.id],
-        id: chat.id,
-        name: chat.name || contact?.name || contact?.notify || contact?.verifiedName || chat.id.split('@')[0],
-        type: isGroup ? 'group' : 'personal',
-        unreadCount: chat.unreadCount || 0,
-        timestamp: ts,
-        lastMsg: chatStore[chat.id]?.lastMsg || '',
-      });
-      database.upsertChat(chatStore[chat.id]);
-    }
-    broadcastChats();
-    backfillContactNames();
-    saveStore();
-    console.log(`[Bridge] History sync: ${chats?.length || 0} chats, ${contacts?.length || 0} contacts`);
-  });
-
-  sock.ev.on('chats.upsert', (chats) => {
-    for (const chat of chats) {
-      const isGroup = chat.id.endsWith('@g.us');
-      const contact = contactStore[chat.id];
-      chatStore[chat.id] = normalizeChat({
-        ...chatStore[chat.id],
-        id: chat.id,
-        name: chat.name || contact?.name || contact?.notify || contact?.verifiedName || chat.id.split('@')[0],
-        type: isGroup ? 'group' : 'personal',
-        unreadCount: chat.unreadCount || 0,
-        timestamp: toTimestamp(chat.conversationTimestamp),
-      });
-      database.upsertChat(chatStore[chat.id]);
-    }
-    broadcastChats();
-    saveStore();
-  });
+    });
+  } catch (err) {
+    console.error('[Bridge] Error in connectToWhatsApp:', err.message);
+    scheduleReconnect();
+  } finally {
+    isConnecting = false;
+  }
 }
 
 // Parse message with media
@@ -877,6 +953,15 @@ async function loadGroups() {
 const notConnected = (res) => res.status(503).json({ error: 'Not connected to WhatsApp' });
 
 app.get('/api/status', (req, res) => res.json({ status: connectionStatus, qr: qrCodeData }));
+app.post('/api/whatsapp/disconnect', async (req, res) => {
+  try {
+    await disconnectWhatsApp();
+    res.json({ success: true, message: 'WhatsApp session disconnected and reset.' });
+  } catch (err) {
+    console.error('[Bridge] Failed to disconnect WhatsApp:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 app.get('/api/health', (req, res) =>
   res.json({ uptime: process.uptime(), status: connectionStatus, operators: operators.size, chats: Object.keys(chatStore).length })
 );
