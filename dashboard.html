@@ -62,6 +62,7 @@
   
   .chat-avatar.channel { background:linear-gradient(135deg,#e11d48,#f59e0b); }
   .chat-avatar.status { background:linear-gradient(135deg,#10b981,#059669); }
+  .chat-avatar.community { background:linear-gradient(135deg,#f59e0b,#db2777); }
   .sidebar-header { padding:16px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; }
   .sidebar-title { font-size:11px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:var(--muted); }
   .count-badge { font-size:10px; font-family:'IBM Plex Mono',monospace; background:var(--surface2); border:1px solid var(--border); color:var(--muted); padding:2px 8px; border-radius:10px; }
@@ -83,6 +84,7 @@
   .chat-item.active { background:var(--surface2); border-color:var(--accent); }
   .chat-avatar { width:36px; height:36px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:700; flex-shrink:0; }
   .chat-avatar.group { background:linear-gradient(135deg,#7c3aed,#2563eb); }
+  .chat-avatar.community { background:linear-gradient(135deg,#f59e0b,#db2777); }
   .chat-avatar.personal { background:linear-gradient(135deg,#059669,#0284c7); }
   .chat-info { flex:1; min-width:0; }
   .chat-name-row { display:flex; align-items:center; justify-content:space-between; gap:8px; }
@@ -350,6 +352,7 @@
     <div class="sidebar-tabs">
       <button class="tab-btn active" id="tabChats" onclick="switchSidebarTab('chats')">Chats</button>
       <button class="tab-btn" id="tabGroups" onclick="switchSidebarTab('groups')">Groups</button>
+      <button class="tab-btn" id="tabCommunities" onclick="switchSidebarTab('communities')">Communities</button>
       <button class="tab-btn" id="tabContacts" onclick="switchSidebarTab('contacts')">Contacts</button>
       <button class="tab-btn" id="tabChannels" onclick="switchSidebarTab('channels')">Channels</button>
       <button class="tab-btn" id="tabStatus" onclick="switchSidebarTab('status')">Status</button>
@@ -599,7 +602,7 @@ function renderChatHeader() {
     return;
   }
 
-  const meta = activeChat.type === 'group'
+  const meta = (activeChat.type === 'group' || activeChat.type === 'community')
     ? `${activeChat.participants || '?'} participants`
     : (activeChat.phone ? '+' + activeChat.phone : (activeChat.id ? (activeChat.id.endsWith('@s.whatsapp.net') ? '+' + activeChat.id.split('@')[0] : activeChat.id) : ''));
   document.getElementById('chatTopAvatar').textContent = (activeChat.name || '?')[0].toUpperCase();
@@ -611,7 +614,7 @@ function renderChatHeader() {
   if (isAssignedToMe(activeChat)) assignmentPill.classList.add('mine');
   else if (isAssignedToOther(activeChat)) assignmentPill.classList.add('locked');
 
-  if (activeChat.type === 'group') {
+  if (activeChat.type === 'group' || activeChat.type === 'community') {
     claimBtn.style.display = 'none';
     releaseBtn.style.display = 'none';
     lockNote.classList.remove('visible');
@@ -632,7 +635,8 @@ function renderChatHeader() {
 }
 
 function refreshComposerState() {
-  const disabled = Boolean(activeChat && activeChat.type !== 'group' && isAssignedToOther(activeChat));
+  const isGroup = activeChat && (activeChat.type === 'group' || activeChat.type === 'community');
+  const disabled = Boolean(activeChat && !isGroup && isAssignedToOther(activeChat));
   const input = document.getElementById('messageInput');
   const sendBtn = document.getElementById('sendBtn');
   const attachBtn = document.getElementById('attachBtn');
@@ -755,21 +759,23 @@ function renderChatList(chats) {
 
   let filteredChats = allChats;
   if (activeSidebarTab === 'chats') {
-    filteredChats = allChats.filter(c => c.type !== 'group' && !c.id.endsWith('@g.us') && !c.id.endsWith('@newsletter') && !c.id.endsWith('@broadcast'));
+    filteredChats = allChats.filter(c => c.type !== 'group' && c.type !== 'community' && !c.id.endsWith('@g.us') && !c.id.endsWith('@newsletter') && !c.id.endsWith('@broadcast'));
   } else if (activeSidebarTab === 'groups') {
-    filteredChats = allChats.filter(c => c.type === 'group' || c.id.endsWith('@g.us'));
+    filteredChats = allChats.filter(c => (c.type === 'group' || c.id.endsWith('@g.us')) && c.type !== 'community');
+  } else if (activeSidebarTab === 'communities') {
+    filteredChats = allChats.filter(c => c.type === 'community');
   } else if (activeSidebarTab === 'channels') {
     filteredChats = allChats.filter(c => c.type === 'channel' || c.id.endsWith('@newsletter'));
   } else if (activeSidebarTab === 'status') {
-    filteredChats = allChats.filter(c => c.id.endsWith('@broadcast'));
+    filteredChats = allChats.filter(c => c.type === 'status' || c.id.endsWith('@broadcast'));
   }
 
   document.getElementById('chatCount').textContent = filteredChats.length;
-  document.getElementById('statGroups').textContent = allChats.filter(c => c.type === 'group' || c.id.endsWith('@g.us')).length;
+  document.getElementById('statGroups').textContent = allChats.filter(c => (c.type === 'group' || c.id.endsWith('@g.us')) && c.type !== 'community').length;
 
   filteredChats.forEach(chat => {
     const assigneeClass = isAssignedToMe(chat) ? 'chat-assignee mine' : (isAssignedToOther(chat) ? 'chat-assignee locked' : 'chat-assignee');
-    const isGroupChat = chat.type === 'group' || chat.id.endsWith('@g.us');
+    const isGroupChat = chat.type === 'group' || chat.type === 'community' || chat.id.endsWith('@g.us');
     const assigneeLabel = isGroupChat ? '' : `<div class="${assigneeClass}">${!chat.assignedOperatorId ? 'Open' : (isAssignedToMe(chat) ? 'Mine' : (chat.assignedOperatorName || 'Locked'))}</div>`;
     const item = document.createElement('div');
     item.className = 'chat-item' + (activeChat?.id === chat.id ? ' active' : '');
@@ -782,7 +788,17 @@ function renderChatList(chats) {
     } else if (chat.id.endsWith('@newsletter') && !chat.name) {
       displayName = 'Channel: ' + chat.id.split('@')[0];
     }
-    const avatarType = chat.id.endsWith('@newsletter') ? 'channel' : (chat.id.endsWith('@broadcast') ? 'status' : (isGroupChat ? 'group' : 'personal'));
+    
+    let avatarType = 'personal';
+    if (chat.type === 'community') {
+      avatarType = 'community';
+    } else if (chat.type === 'channel' || chat.id.endsWith('@newsletter')) {
+      avatarType = 'channel';
+    } else if (chat.type === 'status' || chat.id.endsWith('@broadcast')) {
+      avatarType = 'status';
+    } else if (isGroupChat) {
+      avatarType = 'group';
+    }
 
     item.innerHTML = `
       <div class="chat-avatar ${avatarType}">${(displayName||'?')[0].toUpperCase()}</div>
@@ -1087,14 +1103,14 @@ function appendMessage(msg, scroll=true, prepend=false) {
   row.className = 'message-row ' + (outgoing?'outgoing':'incoming');
   const initial = outgoing
     ? (msg.operatorName?.[0]?.toUpperCase() || operatorName[0] || '?')
-    : (activeChat && activeChat.type !== 'group' && activeChat.name
+    : (activeChat && activeChat.type !== 'group' && activeChat.type !== 'community' && activeChat.name
         ? activeChat.name[0].toUpperCase()
         : (msg.sender?.[0]?.toUpperCase() || msg.participant?.[0]?.toUpperCase() || '?'));
   const senderName = outgoing
     ? (msg.operatorName || msg.sender || 'Unknown')
     : (msg.sender || (msg.participant ? msg.participant.split('@')[0] : 'Unknown'));
   const timeStr = msg.time || (msg.timestamp ? formatTime(new Date(msg.timestamp * 1000)) : '');
-  const isGroup = activeChat?.type === 'group';
+  const isGroup = activeChat?.type === 'group' || activeChat?.type === 'community';
   const editedMark = msg.editedAt ? '<div class="msg-edited">(edited)</div>' : '';
   const showSender = (!outgoing && isGroup) || (outgoing && Boolean(msg.operatorName));
 

@@ -459,6 +459,7 @@ function loadStore() {
     }
     connectorOperatorId = database.getMetadata('connector_operator_id');
     connectorOperatorName = database.getMetadata('connector_operator_name');
+    migrateChatTypes();
     console.log(
       `[Bridge] Loaded SQLite store: ${Object.keys(chatStore).length} chats, ${Object.keys(contactStore).length} contacts, ${Object.keys(messageStore).length} message threads, ${Object.keys(lidToJid).length} lid mappings`
     );
@@ -533,6 +534,36 @@ function getPreferredJid(jid) {
     }
   }
   return jid;
+}
+
+function getChatType(jid) {
+  if (!jid) return 'personal';
+  if (jid.endsWith('@g.us')) {
+    const groupMeta = groupStore[jid];
+    if (groupMeta?.isCommunity || groupMeta?.isCommunityAnnounce) {
+      return 'community';
+    }
+    return 'group';
+  }
+  if (jid.endsWith('@newsletter')) return 'channel';
+  if (jid.endsWith('@broadcast')) return 'status';
+  return 'personal';
+}
+
+function migrateChatTypes() {
+  let updated = false;
+  for (const [jid, chat] of Object.entries(chatStore)) {
+    const correctType = getChatType(jid);
+    if (chat.type !== correctType) {
+      chat.type = correctType;
+      database.upsertChat(chat);
+      updated = true;
+    }
+  }
+  if (updated) {
+    console.log('[Bridge] Migrated/corrected types for some chats');
+    broadcastChats();
+  }
 }
 
 function getMessagesForJid(jid) {
@@ -642,7 +673,7 @@ function ensureChatExists(jid) {
     chatStore[jid] = normalizeChat({
       id: jid,
       name: chatDisplayName(jid),
-      type: jid?.endsWith('@g.us') ? 'group' : 'personal',
+      type: getChatType(jid),
       unreadCount: 0,
       timestamp: 0,
       lastMsg: '',
@@ -950,7 +981,7 @@ async function connectToWhatsApp() {
           chatStore[parsed.jid] = normalizeChat({
             id: parsed.jid,
             name: resolved || chatDisplayName(parsed.jid),
-            type: isGroup ? 'group' : 'personal',
+            type: getChatType(parsed.jid),
             unreadCount: 0,
             timestamp: parsed.timestamp,
             lastMsg: parsed.content,
@@ -977,6 +1008,15 @@ async function connectToWhatsApp() {
     sock.ev.on('groups.update', (updates) => {
       for (const update of updates) {
         if (groupStore[update.id]) groupStore[update.id] = { ...groupStore[update.id], ...update };
+        const meta = groupStore[update.id];
+        if (meta && chatStore[update.id]) {
+          const type = (meta.isCommunity || meta.isCommunityAnnounce) ? 'community' : 'group';
+          if (chatStore[update.id].type !== type) {
+            chatStore[update.id].type = type;
+            database.upsertChat(chatStore[update.id]);
+            broadcastChats();
+          }
+        }
         io.emit('group_update', update);
       }
     });
@@ -1023,14 +1063,13 @@ async function connectToWhatsApp() {
       }
       // --- Process chats ---
       for (const chat of chats || []) {
-        const isGroup = chat.id.endsWith('@g.us');
         const contact = contactStore[chat.id];
         const ts = toTimestamp(chat.conversationTimestamp);
         chatStore[chat.id] = normalizeChat({
           ...chatStore[chat.id],
           id: chat.id,
           name: chat.name || chatDisplayName(chat.id),
-          type: isGroup ? 'group' : 'personal',
+          type: getChatType(chat.id),
           unreadCount: chat.unreadCount || 0,
           timestamp: ts,
           lastMsg: chatStore[chat.id]?.lastMsg || '',
@@ -1127,12 +1166,11 @@ async function connectToWhatsApp() {
 
     sock.ev.on('chats.upsert', (chats) => {
       for (const chat of chats) {
-        const isGroup = chat.id.endsWith('@g.us');
         chatStore[chat.id] = normalizeChat({
           ...chatStore[chat.id],
           id: chat.id,
           name: chat.name || chatDisplayName(chat.id),
-          type: isGroup ? 'group' : 'personal',
+          type: getChatType(chat.id),
           unreadCount: chat.unreadCount || 0,
           timestamp: toTimestamp(chat.conversationTimestamp),
         });
@@ -1281,21 +1319,24 @@ async function loadGroups() {
     const groups = await sock.groupFetchAllParticipating();
     for (const [id, meta] of Object.entries(groups)) {
       groupStore[id] = meta;
+      const type = (meta.isCommunity || meta.isCommunityAnnounce) ? 'community' : 'group';
       if (!chatStore[id]) {
         chatStore[id] = normalizeChat({
           id,
           name: meta.subject,
-          type: 'group',
+          type: type,
           unreadCount: 0,
           timestamp: meta.creation || 0,
           lastMsg: '',
         });
       } else {
         chatStore[id].name = meta.subject;
+        chatStore[id].type = type;
       }
       database.upsertChat(chatStore[id]);
     }
     io.emit('groups', Object.values(groupStore));
+    migrateChatTypes();
     broadcastChats();
     saveStore();
     console.log(`[Bridge] Loaded ${Object.keys(groupStore).length} groups`);
