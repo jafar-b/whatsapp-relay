@@ -135,6 +135,31 @@ function normalizeChat(chat = {}) {
 }
 
 function normalizeMessageRecord(msg = {}) {
+  const participantJid = msg.participant || msg.sender;
+  let resolvedSender = msg.sender;
+  if (participantJid) {
+    resolvedSender = resolveContactName(participantJid) || msg.sender;
+    if (!resolvedSender || resolvedSender === participantJid || resolvedSender.endsWith('@lid') || resolvedSender.endsWith('@s.whatsapp.net')) {
+      if (participantJid.endsWith('@lid')) {
+        const phoneJid = lidToJid[participantJid];
+        if (phoneJid) {
+          resolvedSender = resolveContactName(phoneJid) || '+' + phoneJid.split('@')[0];
+        }
+      } else if (participantJid.endsWith('@s.whatsapp.net')) {
+        const lidJid = jidToLid[participantJid];
+        if (lidJid) {
+          resolvedSender = resolveContactName(lidJid);
+        }
+        if (!resolvedSender) {
+          resolvedSender = '+' + participantJid.split('@')[0];
+        }
+      }
+    }
+  }
+  if (resolvedSender && (resolvedSender.endsWith('@lid') || resolvedSender.endsWith('@s.whatsapp.net'))) {
+    resolvedSender = '+' + resolvedSender.split('@')[0];
+  }
+
   return {
     ...msg,
     id: msg.id,
@@ -142,7 +167,7 @@ function normalizeMessageRecord(msg = {}) {
     jid: msg.from || msg.jid,
     fromMe: Boolean(msg.fromMe),
     participant: msg.participant || null,
-    sender: msg.sender || null,
+    sender: resolvedSender || msg.sender || null,
     operatorId: msg.operatorId || null,
     operatorName: msg.operatorName || null,
     content: msg.content || '',
@@ -1238,7 +1263,7 @@ async function parseMessage(raw, skipMedia = false) {
     jid: raw.key.remoteJid,
     fromMe: raw.key.fromMe,
     participant: raw.participant || raw.key.participant,
-    sender: raw.participant || raw.key.participant || raw.pushName || null,
+    sender: raw.pushName || raw.participant || raw.key.participant || null,
     operatorId: null,
     operatorName: null,
     content,
