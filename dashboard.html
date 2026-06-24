@@ -1000,7 +1000,13 @@ function openChatById(id, name) {
   else if (id.endsWith('@newsletter')) type = 'channel';
   else if (id.endsWith('@broadcast')) type = 'status';
   
-  if (type === 'group') {
+  if (existing && existing.type) {
+    type = existing.type;
+  }
+  
+  if (type === 'community') {
+    switchSidebarTab('communities');
+  } else if (type === 'group') {
     switchSidebarTab('groups');
   } else if (type === 'channel') {
     switchSidebarTab('channels');
