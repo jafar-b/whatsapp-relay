@@ -398,7 +398,7 @@ function loadStore() {
       if (contact?.id) {
         contactStore[contact.id] = contact;
         // Rebuild @lid <-> phone JID cross-reference from persisted contacts.
-        if (contact.lid && contact.id) {
+        if (contact.lid && contact.id && !contact.id.endsWith('@lid')) {
           lidToJid[contact.lid] = contact.id;
           jidToLid[contact.id] = contact.lid;
         }
@@ -426,7 +426,29 @@ function loadStore() {
 }
 
 function sortedChats() {
-  return Object.values(chatStore).map(normalizeChat).sort((a, b) => toTimestamp(b.timestamp) - toTimestamp(a.timestamp));
+  const chats = Object.values(chatStore).map(normalizeChat);
+  const filtered = [];
+  const seenPhoneJids = new Set();
+  
+  for (const chat of chats) {
+    if (chat.id && !chat.id.endsWith('@lid')) {
+      filtered.push(chat);
+      if (chat.id.endsWith('@s.whatsapp.net')) {
+        seenPhoneJids.add(chat.id);
+      }
+    }
+  }
+  
+  for (const chat of chats) {
+    if (chat.id && chat.id.endsWith('@lid')) {
+      const phoneJid = lidToJid[chat.id];
+      if (!phoneJid || !seenPhoneJids.has(phoneJid)) {
+        filtered.push(chat);
+      }
+    }
+  }
+  
+  return filtered.sort((a, b) => toTimestamp(b.timestamp) - toTimestamp(a.timestamp));
 }
 
 function resolveContactName(jid) {
@@ -456,10 +478,13 @@ function resolveContactName(jid) {
 
 function getPreferredJid(jid) {
   if (!jid) return jid;
-  const altJid = jid.endsWith('@lid') ? lidToJid[jid] : jidToLid[jid];
-  if (altJid) {
-    if (chatStore[altJid] && !chatStore[jid]) {
-      return altJid;
+  if (jid.endsWith('@lid')) {
+    const phoneJid = lidToJid[jid];
+    if (phoneJid) return phoneJid;
+  } else {
+    const lidJid = jidToLid[jid];
+    if (lidJid && chatStore[lidJid] && !chatStore[jid]) {
+      return lidJid;
     }
   }
   return jid;
@@ -487,7 +512,7 @@ function backfillContactNames() {
   let updated = false;
   for (const [jid, chat] of Object.entries(chatStore)) {
     if (chat.type !== 'personal') continue;
-    const name = chatDisplayName(jid);
+    const name = resolveContactName(jid);
     if (name && chat.name !== name) {
       chat.name = name;
       updated = true;
@@ -669,9 +694,9 @@ function ensureChatLockForOperator(jid, operator) {
 
 function updateChatPreview(jid, lastMsg, timestamp) {
   const chat = ensureChatExists(jid);
-  const contact = contactStore[jid];
-  if (!chat.name || chat.name === jid?.split('@')[0]) {
-    chat.name = contact?.name || contact?.notify || contact?.verifiedName || chat.name;
+  const resolved = resolveContactName(jid);
+  if (resolved) {
+    chat.name = resolved;
   }
   chat.lastMsg = lastMsg || '';
   chat.timestamp = toTimestamp(timestamp);
@@ -864,10 +889,20 @@ async function connectToWhatsApp() {
         io.emit('message', parsed);
         const contact = contactStore[parsed.jid];
         const isGroup = parsed.jid?.endsWith('@g.us');
+        if (msg.pushName && parsed.jid && !isGroup) {
+          if (!contactStore[parsed.jid]) {
+            contactStore[parsed.jid] = { id: parsed.jid };
+          }
+          if (!contactStore[parsed.jid].name && contactStore[parsed.jid].notify !== msg.pushName) {
+            contactStore[parsed.jid].notify = msg.pushName;
+            database.upsertContact(contactStore[parsed.jid]);
+          }
+        }
         if (!chatStore[parsed.jid]) {
+          const resolved = resolveContactName(parsed.jid);
           chatStore[parsed.jid] = normalizeChat({
             id: parsed.jid,
-            name: contact?.name || contact?.notify || chatDisplayName(parsed.jid),
+            name: resolved || chatDisplayName(parsed.jid),
             type: isGroup ? 'group' : 'personal',
             unreadCount: 0,
             timestamp: parsed.timestamp,
@@ -876,8 +911,15 @@ async function connectToWhatsApp() {
         } else {
           chatStore[parsed.jid].lastMsg = parsed.content;
           chatStore[parsed.jid].timestamp = parsed.timestamp;
-          if (!chatStore[parsed.jid].name || chatStore[parsed.jid].name === parsed.jid?.split('@')[0]) {
-            chatStore[parsed.jid].name = contact?.name || contact?.notify || chatDisplayName(parsed.jid);
+          const resolved = resolveContactName(parsed.jid);
+          if (resolved) {
+            chatStore[parsed.jid].name = resolved;
+          } else {
+            const currentName = chatStore[parsed.jid].name;
+            const cleanJid = parsed.jid?.split('@')[0];
+            if (!currentName || currentName === cleanJid || currentName === '+' + cleanJid) {
+              chatStore[parsed.jid].name = chatDisplayName(parsed.jid);
+            }
           }
         }
         broadcastChats();
@@ -896,7 +938,7 @@ async function connectToWhatsApp() {
       for (const contact of contacts) {
         contactStore[contact.id] = { ...contactStore[contact.id], ...contact };
         // Track @lid <-> phone JID cross-reference mappings.
-        if (contact.lid && contact.id) {
+        if (contact.lid && contact.id && !contact.id.endsWith('@lid')) {
           lidToJid[contact.lid] = contact.id;
           jidToLid[contact.id] = contact.lid;
         }
@@ -911,7 +953,7 @@ async function connectToWhatsApp() {
         if (contactStore[update.id]) Object.assign(contactStore[update.id], update);
         else contactStore[update.id] = update;
         // Track @lid <-> phone JID mappings from the lid field.
-        if (update.lid && update.id) {
+        if (update.lid && update.id && !update.id.endsWith('@lid')) {
           lidToJid[update.lid] = update.id;
           jidToLid[update.id] = update.lid;
         }
@@ -926,7 +968,7 @@ async function connectToWhatsApp() {
       for (const contact of contacts || []) {
         contactStore[contact.id] = { ...contactStore[contact.id], ...contact };
         // Track @lid <-> phone JID cross-reference mappings.
-        if (contact.lid && contact.id) {
+        if (contact.lid && contact.id && !contact.id.endsWith('@lid')) {
           lidToJid[contact.lid] = contact.id;
           jidToLid[contact.id] = contact.lid;
         }

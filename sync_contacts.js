@@ -92,6 +92,7 @@ function main() {
 
   const selectChatsStmt = db.prepare('SELECT id, name, type, payload FROM chats');
   const selectContactStmt = db.prepare('SELECT payload FROM contacts WHERE id = ?');
+  const selectAllContactsStmt = db.prepare('SELECT payload FROM contacts');
   const upsertContactStmt = db.prepare(`
     INSERT INTO contacts (id, payload, updated_at)
     VALUES (@id, @payload, @updated_at)
@@ -101,6 +102,16 @@ function main() {
   `);
   const updateChatStmt = db.prepare('UPDATE chats SET name = ?, payload = ?, updated_at = ? WHERE id = ?');
 
+  const lidToJid = new Map();
+  for (const row of selectAllContactsStmt.iterate()) {
+    try {
+      const contact = JSON.parse(row.payload);
+      if (contact.lid && contact.id && !contact.id.endsWith('@lid')) {
+        lidToJid.set(contact.lid, contact.id);
+      }
+    } catch {}
+  }
+
   let updatedChats = 0;
   let updatedContacts = 0;
 
@@ -109,8 +120,14 @@ function main() {
       if (chat.type !== 'personal') continue;
 
       const jid = chat.id;
-      const phone = jid.split('@')[0];
-      if (chat.name && chat.name !== phone) continue;
+      let phone = jid.split('@')[0];
+      if (jid.endsWith('@lid')) {
+        const phoneJid = lidToJid.get(jid);
+        if (phoneJid) {
+          phone = phoneJid.split('@')[0];
+        }
+      }
+      if (chat.name && chat.name !== phone && chat.name !== '+' + phone && chat.name !== jid.split('@')[0]) continue;
 
       const name = vcfContacts.get(phone) || (phone.length >= 10 ? vcfContacts.get(phone.slice(-10)) : null);
       if (!name) continue;
