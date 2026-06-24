@@ -91,6 +91,38 @@ const chatStore = {};
 const lidToJid = {};  // "hex123@lid" -> "91987...@s.whatsapp.net"
 const jidToLid = {};  // "91987...@s.whatsapp.net" -> "hex123@lid"
 
+function addLidMapping(contact) {
+  if (!contact) return;
+  const id = contact.id;
+  if (id) {
+    if (id.endsWith('@lid') && contact.phoneNumber) {
+      lidToJid[id] = contact.phoneNumber;
+      jidToLid[contact.phoneNumber] = id;
+    } else if (!id.endsWith('@lid') && contact.lid) {
+      lidToJid[contact.lid] = id;
+      jidToLid[id] = contact.lid;
+    }
+  }
+}
+
+function cleanJidToPhone(jid) {
+  if (!jid) return '';
+  if (jid.includes('@')) {
+    const parts = jid.split('@');
+    const domain = parts[1];
+    if (domain === 's.whatsapp.net' || domain === 'lid') {
+      const num = parts[0].split(':')[0];
+      return num.startsWith('+') ? num : '+' + num;
+    }
+    return parts[0];
+  }
+  if (jid.includes(':')) {
+    const num = jid.split(':')[0];
+    return num.startsWith('+') ? num : '+' + num;
+  }
+  return jid.startsWith('+') ? jid : '+' + jid;
+}
+
 // Operator registry
 const operators = new Map(); // socketId -> { id, name, connectedAt, socketId }
 let connectorOperatorId = null;
@@ -114,20 +146,39 @@ function normalizeChat(chat = {}) {
   const id = chat.id;
   if (id) {
     if (id.endsWith('@s.whatsapp.net')) {
-      phone = id.split('@')[0];
+      phone = id.split('@')[0].split(':')[0];
     } else if (id.endsWith('@lid')) {
       const phoneJid = lidToJid[id];
       if (phoneJid) {
-        phone = phoneJid.split('@')[0];
+        phone = phoneJid.split('@')[0].split(':')[0];
       }
     }
   }
+
+  // Resolve verifiedName from contactStore if not already set on chat
+  let verifiedName = chat.verifiedName || null;
+  if (id && !verifiedName) {
+    const contact = contactStore[id];
+    if (contact?.verifiedName) {
+      verifiedName = contact.verifiedName;
+    }
+  }
+
+  // Refresh name if it's currently numeric/ambiguous or missing
+  let currentName = chat.name;
+  const isAmbiguous = !currentName || /^\d+$/.test(currentName) || currentName.includes('@');
+  if (isAmbiguous && id) {
+    currentName = chatDisplayName(id);
+  }
+
   return {
     ...chat,
     phone: phone || chat.phone || null,
     unreadCount: Number(chat.unreadCount || 0),
     timestamp: toTimestamp(chat.timestamp),
     lastMsg: chat.lastMsg || '',
+    name: currentName,
+    verifiedName: verifiedName,
     assignedOperatorId: chat.assignedOperatorId || null,
     assignedOperatorName: chat.assignedOperatorName || null,
     assignedAt: chat.assignedAt || null,
@@ -139,11 +190,11 @@ function normalizeMessageRecord(msg = {}) {
   let resolvedSender = msg.sender;
   if (participantJid) {
     resolvedSender = resolveContactName(participantJid) || msg.sender;
-    if (!resolvedSender || resolvedSender === participantJid || resolvedSender.endsWith('@lid') || resolvedSender.endsWith('@s.whatsapp.net')) {
+    if (!resolvedSender || resolvedSender === participantJid || resolvedSender.endsWith('@lid') || resolvedSender.endsWith('@s.whatsapp.net') || resolvedSender.includes(':')) {
       if (participantJid.endsWith('@lid')) {
         const phoneJid = lidToJid[participantJid];
         if (phoneJid) {
-          resolvedSender = resolveContactName(phoneJid) || '+' + phoneJid.split('@')[0];
+          resolvedSender = resolveContactName(phoneJid) || cleanJidToPhone(phoneJid);
         }
       } else if (participantJid.endsWith('@s.whatsapp.net')) {
         const lidJid = jidToLid[participantJid];
@@ -151,13 +202,13 @@ function normalizeMessageRecord(msg = {}) {
           resolvedSender = resolveContactName(lidJid);
         }
         if (!resolvedSender) {
-          resolvedSender = '+' + participantJid.split('@')[0];
+          resolvedSender = cleanJidToPhone(participantJid);
         }
       }
     }
   }
-  if (resolvedSender && (resolvedSender.endsWith('@lid') || resolvedSender.endsWith('@s.whatsapp.net'))) {
-    resolvedSender = '+' + resolvedSender.split('@')[0];
+  if (resolvedSender && (resolvedSender.endsWith('@lid') || resolvedSender.endsWith('@s.whatsapp.net') || resolvedSender.includes(':') || /^\d+$/.test(resolvedSender))) {
+    resolvedSender = cleanJidToPhone(resolvedSender);
   }
 
   return {
@@ -443,10 +494,7 @@ function loadStore() {
       if (contact?.id) {
         contactStore[contact.id] = contact;
         // Rebuild @lid <-> phone JID cross-reference from persisted contacts.
-        if (contact.lid && contact.id && !contact.id.endsWith('@lid')) {
-          lidToJid[contact.lid] = contact.id;
-          jidToLid[contact.id] = contact.lid;
-        }
+        addLidMapping(contact);
       }
     }
     for (const chat of state.chats) {
@@ -650,22 +698,31 @@ function broadcastChats() {
 }
 
 function chatDisplayName(jid) {
-  const resolvedName = resolveContactName(jid);
-  if (resolvedName) return resolvedName;
-
-  // Cross-reference: if JID is a LID JID, try to get the phone number JID.
-  if (jid?.endsWith('@lid')) {
+  let resolvedName = resolveContactName(jid);
+  
+  // Format numeric fallback
+  let phoneFallback = jid.split('@')[0];
+  if (jid.endsWith('@lid')) {
     const phoneJid = lidToJid[jid];
     if (phoneJid) {
-      return '+' + phoneJid.split('@')[0];
+      phoneFallback = phoneJid.split('@')[0];
     }
   }
-  // If JID is a phone JID, prefix with '+' for clear display.
-  if (jid?.endsWith('@s.whatsapp.net')) {
-    return '+' + jid.split('@')[0];
+  const formattedPhone = '+' + phoneFallback.split(':')[0];
+
+  if (resolvedName) {
+    const isAmbiguous = !resolvedName || resolvedName.length <= 2 || /^\d+$/.test(resolvedName);
+    if (isAmbiguous && jid && !jid.endsWith('@g.us')) {
+      return `${resolvedName} (${formattedPhone})`;
+    }
+    return resolvedName;
   }
 
-  return jid?.split('@')[0] || jid;
+  if (jid.endsWith('@s.whatsapp.net') || jid.endsWith('@lid')) {
+    return formattedPhone;
+  }
+
+  return jid?.split('@')[0]?.split(':')[0] || jid;
 }
 
 function ensureChatExists(jid) {
@@ -958,6 +1015,31 @@ async function connectToWhatsApp() {
         if (!msg.message) continue;
         const parsedRaw = await parseMessage(msg, isHistory);
         if (!parsedRaw) continue;
+
+        // Upsert verified name and push name into contactStore BEFORE normalizing
+        const isGroup = parsedRaw.jid?.endsWith('@g.us');
+        if (parsedRaw.jid && !isGroup) {
+          const verifiedName = msg.verifiedBizName || msg.verifiedName || parsedRaw.verifiedBizName || parsedRaw.verifiedName;
+          const pushName = msg.pushName || parsedRaw.pushName;
+          if (verifiedName || pushName) {
+            if (!contactStore[parsedRaw.jid]) {
+              contactStore[parsedRaw.jid] = { id: parsedRaw.jid };
+            }
+            let contactUpdated = false;
+            if (verifiedName && contactStore[parsedRaw.jid] && contactStore[parsedRaw.jid].verifiedName !== verifiedName) {
+              contactStore[parsedRaw.jid].verifiedName = verifiedName;
+              contactUpdated = true;
+            }
+            if (pushName && !contactStore[parsedRaw.jid].name && contactStore[parsedRaw.jid].notify !== pushName) {
+              contactStore[parsedRaw.jid].notify = pushName;
+              contactUpdated = true;
+            }
+            if (contactUpdated) {
+              database.upsertContact(contactStore[parsedRaw.jid]);
+            }
+          }
+        }
+
         const parsed = normalizeMessageRecord(parsedRaw);
         parsed.jid = getPreferredJid(parsed.jid);
         parsed.from = parsed.jid;
@@ -965,17 +1047,6 @@ async function connectToWhatsApp() {
         if (thread.some((existing) => existing.id === parsed.id)) continue;
         addMessageToStore(parsed);
         io.emit('message', parsed);
-        const contact = contactStore[parsed.jid];
-        const isGroup = parsed.jid?.endsWith('@g.us');
-        if (msg.pushName && parsed.jid && !isGroup) {
-          if (!contactStore[parsed.jid]) {
-            contactStore[parsed.jid] = { id: parsed.jid };
-          }
-          if (!contactStore[parsed.jid].name && contactStore[parsed.jid].notify !== msg.pushName) {
-            contactStore[parsed.jid].notify = msg.pushName;
-            database.upsertContact(contactStore[parsed.jid]);
-          }
-        }
         if (!chatStore[parsed.jid]) {
           const resolved = resolveContactName(parsed.jid);
           chatStore[parsed.jid] = normalizeChat({
@@ -1025,10 +1096,7 @@ async function connectToWhatsApp() {
       for (const contact of contacts) {
         contactStore[contact.id] = { ...contactStore[contact.id], ...contact };
         // Track @lid <-> phone JID cross-reference mappings.
-        if (contact.lid && contact.id && !contact.id.endsWith('@lid')) {
-          lidToJid[contact.lid] = contact.id;
-          jidToLid[contact.id] = contact.lid;
-        }
+        addLidMapping(contactStore[contact.id]);
         database.upsertContact(contactStore[contact.id]);
       }
       backfillContactNames();
@@ -1040,10 +1108,7 @@ async function connectToWhatsApp() {
         if (contactStore[update.id]) Object.assign(contactStore[update.id], update);
         else contactStore[update.id] = update;
         // Track @lid <-> phone JID mappings from the lid field.
-        if (update.lid && update.id && !update.id.endsWith('@lid')) {
-          lidToJid[update.lid] = update.id;
-          jidToLid[update.id] = update.lid;
-        }
+        addLidMapping(contactStore[update.id]);
         database.upsertContact(contactStore[update.id]);
       }
       backfillContactNames();
@@ -1055,10 +1120,7 @@ async function connectToWhatsApp() {
       for (const contact of contacts || []) {
         contactStore[contact.id] = { ...contactStore[contact.id], ...contact };
         // Track @lid <-> phone JID cross-reference mappings.
-        if (contact.lid && contact.id && !contact.id.endsWith('@lid')) {
-          lidToJid[contact.lid] = contact.id;
-          jidToLid[contact.id] = contact.lid;
-        }
+        addLidMapping(contactStore[contact.id]);
         database.upsertContact(contactStore[contact.id]);
       }
       // --- Process chats ---
@@ -1301,7 +1363,9 @@ async function parseMessage(raw, skipMedia = false) {
     jid: raw.key.remoteJid,
     fromMe: raw.key.fromMe,
     participant: raw.participant || raw.key.participant,
-    sender: raw.pushName || raw.participant || raw.key.participant || null,
+    sender: raw.verifiedBizName || raw.verifiedName || raw.pushName || raw.participant || raw.key.participant || null,
+    verifiedBizName: raw.verifiedBizName || null,
+    verifiedName: raw.verifiedName || null,
     operatorId: null,
     operatorName: null,
     content,
@@ -1375,14 +1439,14 @@ app.get('/api/contacts/search', (req, res) => {
   const results = Object.values(contactStore)
     .filter((contact) => {
       const name = (contact.name || contact.notify || '').toLowerCase();
-      const phone = (contact.id || '').split('@')[0];
+      const phone = (contact.id || '').split('@')[0].split(':')[0];
       return name.includes(q) || phone.includes(q);
     })
     .slice(0, 20)
     .map((contact) => ({
       id: contact.id,
-      name: contact.name || contact.notify || contact.id.split('@')[0],
-      phone: contact.id.split('@')[0],
+      name: contact.name || contact.notify || contact.id.split('@')[0].split(':')[0],
+      phone: contact.id.split('@')[0].split(':')[0],
     }));
   res.json(results);
 });
@@ -1422,8 +1486,8 @@ app.get('/api/contacts', (req, res) => {
     const contacts = Object.values(contactStore)
       .map((c) => ({
         id: c.id,
-        name: c.name || c.notify || c.verifiedName || c.id.split('@')[0],
-        phone: c.id.split('@')[0],
+        name: c.name || c.notify || c.verifiedName || c.id.split('@')[0].split(':')[0],
+        phone: c.id.split('@')[0].split(':')[0],
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
     res.json(contacts);

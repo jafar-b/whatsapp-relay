@@ -587,6 +587,31 @@ function formatDate(ts) {
   return d.toLocaleDateString([],{month:'short',day:'numeric'}) + ' ' + formatTime(d);
 }
 
+function cleanJid(val) {
+  if (!val) return '';
+  val = String(val).trim();
+  if (val.includes('@')) {
+    const parts = val.split('@');
+    const domain = parts[1];
+    if (domain === 's.whatsapp.net' || domain === 'lid') {
+      const num = parts[0].split(':')[0];
+      return num.startsWith('+') ? num : '+' + num;
+    }
+    return parts[0];
+  }
+  if (val.includes(':')) {
+    const num = val.split(':')[0];
+    if (/^\d{8,}$/.test(num)) {
+      return '+' + num;
+    }
+    return num;
+  }
+  if (/^\d{8,}$/.test(val)) {
+    return '+' + val;
+  }
+  return val;
+}
+
 function renderChatHeader() {
   const assignmentPill = document.getElementById('assignmentPill');
   const claimBtn = document.getElementById('claimChatBtn');
@@ -604,9 +629,14 @@ function renderChatHeader() {
 
   const meta = (activeChat.type === 'group' || activeChat.type === 'community')
     ? `${activeChat.participants || '?'} participants`
-    : (activeChat.phone ? '+' + activeChat.phone : (activeChat.id ? (activeChat.id.endsWith('@s.whatsapp.net') ? '+' + activeChat.id.split('@')[0] : activeChat.id) : ''));
-  document.getElementById('chatTopAvatar').textContent = (activeChat.name || '?')[0].toUpperCase();
-  document.getElementById('chatTopName').textContent = activeChat.name || activeChat.id;
+    : cleanJid(activeChat.phone || activeChat.id || '');
+  let topDisplayName = cleanJid(activeChat.verifiedName || activeChat.name || activeChat.id);
+  const isVerified = Boolean(activeChat.verifiedName);
+  const verifiedBadge = isVerified ? `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="#0095f6" viewBox="0 0 16 16" style="margin-left:6px;vertical-align:middle;flex-shrink:0;" title="Verified Business"><path d="M10.067.87a2.89 2.89 0 0 0-4.134 0l-.622.622-2.08-.02a2.89 2.89 0 0 0-2.91 2.91l.02 2.08-.622.622a2.89 2.89 0 0 0 0 4.134l.622.622-.02 2.08a2.89 2.89 0 0 0 2.91 2.91l2.08-.02.622.622a2.89 2.89 0 0 0 4.134 0l.622-.622 2.08.02a2.89 2.89 0 0 0 2.91-2.91l-.02-2.08.622-.622a2.89 2.89 0 0 0 0-4.134l-.622-.622.02-2.08a2.89 2.89 0 0 0-2.91-2.91l-2.08.02-.622-.622zM8.14 10.146a.75.75 0 0 1-1.079-.02L4.697 7.731a.75.75 0 1 1 1.071-1.05l1.829 1.828L11.83 4.5a.75.75 0 1 1 1.06 1.06L8.14 10.147z"/></svg>` : '';
+
+  const topAvatarInitial = (topDisplayName.startsWith('+') ? topDisplayName.slice(1) : topDisplayName || '?')[0].toUpperCase();
+  document.getElementById('chatTopAvatar').textContent = topAvatarInitial;
+  document.getElementById('chatTopName').innerHTML = `<span style="display:inline-flex;align-items:center;">${topDisplayName}${verifiedBadge}</span>`;
   document.getElementById('chatTopMeta').textContent = meta;
 
   assignmentPill.textContent = assignmentText(activeChat);
@@ -782,12 +812,15 @@ function renderChatList(chats) {
     item.setAttribute('data-jid', chat.id);
     item.onclick = () => openChat(chat, item);
     
-    let displayName = chat.name || chat.id;
+    let displayName = cleanJid(chat.verifiedName || chat.name || chat.id);
     if (chat.id === 'status@broadcast') {
       displayName = 'Status Updates';
     } else if (chat.id.endsWith('@newsletter') && !chat.name) {
-      displayName = 'Channel: ' + chat.id.split('@')[0];
+      displayName = 'Channel: ' + cleanJid(chat.id);
     }
+    
+    const isVerified = Boolean(chat.verifiedName);
+    const verifiedBadge = isVerified ? `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="#0095f6" viewBox="0 0 16 16" style="margin-left:4px;vertical-align:middle;flex-shrink:0;" title="Verified Business"><path d="M10.067.87a2.89 2.89 0 0 0-4.134 0l-.622.622-2.08-.02a2.89 2.89 0 0 0-2.91 2.91l.02 2.08-.622.622a2.89 2.89 0 0 0 0 4.134l.622.622-.02 2.08a2.89 2.89 0 0 0 2.91 2.91l2.08-.02.622.622a2.89 2.89 0 0 0 4.134 0l.622-.622 2.08.02a2.89 2.89 0 0 0 2.91-2.91l-.02-2.08.622-.622a2.89 2.89 0 0 0 0-4.134l-.622-.622.02-2.08a2.89 2.89 0 0 0-2.91-2.91l-2.08.02-.622-.622zM8.14 10.146a.75.75 0 0 1-1.079-.02L4.697 7.731a.75.75 0 1 1 1.071-1.05l1.829 1.828L11.83 4.5a.75.75 0 1 1 1.06 1.06L8.14 10.147z"/></svg>` : '';
     
     let avatarType = 'personal';
     if (chat.type === 'community') {
@@ -800,11 +833,16 @@ function renderChatList(chats) {
       avatarType = 'group';
     }
 
+    const avatarInitial = (displayName.startsWith('+') ? displayName.slice(1) : displayName || '?')[0].toUpperCase();
+
     item.innerHTML = `
-      <div class="chat-avatar ${avatarType}">${(displayName||'?')[0].toUpperCase()}</div>
+      <div class="chat-avatar ${avatarType}">${avatarInitial}</div>
       <div class="chat-info">
         <div class="chat-name-row">
-          <div class="chat-name">${displayName}</div>
+          <div class="chat-name" style="display:flex;align-items:center;min-width:0;width:100%;">
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${displayName}</span>
+            ${verifiedBadge}
+          </div>
           ${assigneeLabel}
         </div>
         <div class="chat-preview">${chat.lastMsg||chat.preview||''}</div>
@@ -835,13 +873,15 @@ function renderContactsList() {
     item.className = 'chat-item';
     item.onclick = () => openContactChat(contact);
 
+    const cleanName = cleanJid(contact.name);
+    const avatarInitial = (cleanName.startsWith('+') ? cleanName.slice(1) : cleanName || '?')[0].toUpperCase();
     item.innerHTML = `
-      <div class="chat-avatar personal">${(contact.name || '?')[0].toUpperCase()}</div>
+      <div class="chat-avatar personal">${avatarInitial}</div>
       <div class="chat-info">
         <div class="chat-name-row">
-          <div class="chat-name">${contact.name}</div>
+          <div class="chat-name">${cleanName}</div>
         </div>
-        <div class="chat-preview">+${contact.phone}</div>
+        <div class="chat-preview">+${contact.phone.split(':')[0]}</div>
       </div>
     `;
     list.appendChild(item);
@@ -918,7 +958,7 @@ function onSearch(q) {
 
   const localMatches = allChats.filter(c => (c.name||'').toLowerCase().includes(q.toLowerCase()));
   if (localMatches.length) {
-    renderSearchResults(localMatches.map(c => ({ id: c.id, name: c.name, phone: c.id.split('@')[0] })));
+    renderSearchResults(localMatches.map(c => ({ id: c.id, name: c.name, phone: c.id.split('@')[0].split(':')[0] })));
   }
 
   if (socket) {
@@ -935,14 +975,19 @@ function onSearch(q) {
 function renderSearchResults(results) {
   const el = document.getElementById('searchResults');
   if (!results.length) { el.classList.remove('visible'); return; }
-  el.innerHTML = results.map(r => `
-    <div class="search-result-item" onclick="openChatById('${r.id}','${(r.name||r.phone).replace(/'/g,"\\'")}')">
-      <div class="chat-avatar personal" style="width:28px;height:28px;font-size:11px;flex-shrink:0">${(r.name||r.phone)[0].toUpperCase()}</div>
-      <div>
-        <div style="font-weight:600">${r.name||r.phone}</div>
-        <div class="search-result-phone">${r.phone}</div>
-      </div>
-    </div>`).join('');
+  el.innerHTML = results.map(r => {
+    const cleanName = cleanJid(r.name || r.phone);
+    const cleanPhone = cleanJid(r.phone);
+    const avatarInitial = (cleanName.startsWith('+') ? cleanName.slice(1) : cleanName || '?')[0].toUpperCase();
+    return `
+      <div class="search-result-item" onclick="openChatById('${r.id}','${cleanName.replace(/'/g,"\\'")}')">
+        <div class="chat-avatar personal" style="width:28px;height:28px;font-size:11px;flex-shrink:0">${avatarInitial}</div>
+        <div>
+          <div style="font-weight:600">${cleanName}</div>
+          <div class="search-result-phone">${cleanPhone}</div>
+        </div>
+      </div>`;
+  }).join('');
   el.classList.add('visible');
 }
 
@@ -1101,14 +1146,18 @@ function appendMessage(msg, scroll=true, prepend=false) {
   const row = document.createElement('div');
   row.id = 'msg-' + msg.id;
   row.className = 'message-row ' + (outgoing?'outgoing':'incoming');
-  const initial = outgoing
-    ? (msg.operatorName?.[0]?.toUpperCase() || operatorName[0] || '?')
-    : (activeChat && activeChat.type !== 'group' && activeChat.type !== 'community' && activeChat.name
-        ? activeChat.name[0].toUpperCase()
-        : (msg.sender?.[0]?.toUpperCase() || msg.participant?.[0]?.toUpperCase() || '?'));
+  let resolvedSender = cleanJid(msg.sender);
   const senderName = outgoing
-    ? (msg.operatorName || msg.sender || 'Unknown')
-    : (msg.sender || (msg.participant ? msg.participant.split('@')[0] : 'Unknown'));
+    ? (msg.operatorName || resolvedSender || 'Unknown')
+    : (resolvedSender || (msg.participant ? cleanJid(msg.participant) : 'Unknown'));
+
+  const initialName = outgoing
+    ? (msg.operatorName || operatorName || '?')
+    : (activeChat && activeChat.type !== 'group' && activeChat.type !== 'community' && activeChat.name
+        ? activeChat.name
+        : (msg.sender || msg.participant || '?'));
+  const cleanInitialName = cleanJid(initialName).replace('+', '');
+  const initial = (cleanInitialName || '?')[0].toUpperCase();
   const timeStr = msg.time || (msg.timestamp ? formatTime(new Date(msg.timestamp * 1000)) : '');
   const isGroup = activeChat?.type === 'group' || activeChat?.type === 'community';
   const editedMark = msg.editedAt ? '<div class="msg-edited">(edited)</div>' : '';
@@ -1204,9 +1253,16 @@ function onChatMessagesLoaded(data) {
 }
 
 function normalizeMessage(m) {
+  let sender = cleanJid(m.sender || '');
+  if (!sender) {
+    const part = m.participant || m.from;
+    if (part) {
+      sender = cleanJid(part);
+    }
+  }
   return {
     id: m.id,
-    sender: m.sender || m.participant?.split('@')[0] || m.from?.split('@')[0] || 'Unknown',
+    sender: sender || 'Unknown',
     participant: m.participant,
     content: m.content,
     time: m.timestamp ? formatTime(new Date(m.timestamp * 1000)) : '',

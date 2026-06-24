@@ -106,8 +106,12 @@ function main() {
   for (const row of selectAllContactsStmt.iterate()) {
     try {
       const contact = JSON.parse(row.payload);
-      if (contact.lid && contact.id && !contact.id.endsWith('@lid')) {
-        lidToJid.set(contact.lid, contact.id);
+      if (contact.id) {
+        if (contact.id.endsWith('@lid') && contact.phoneNumber) {
+          lidToJid.set(contact.id, contact.phoneNumber);
+        } else if (!contact.id.endsWith('@lid') && contact.lid) {
+          lidToJid.set(contact.lid, contact.id);
+        }
       }
     } catch {}
   }
