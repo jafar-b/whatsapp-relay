@@ -158,6 +158,26 @@ function normalizeMessageRecord(msg = {}) {
   };
 }
 
+function unwrapMessage(message) {
+  if (!message) return null;
+  if (message.ephemeralMessage?.message) {
+    return unwrapMessage(message.ephemeralMessage.message);
+  }
+  if (message.viewOnceMessage?.message) {
+    return unwrapMessage(message.viewOnceMessage.message);
+  }
+  if (message.viewOnceMessageV2?.message) {
+    return unwrapMessage(message.viewOnceMessageV2.message);
+  }
+  if (message.viewOnceMessageV2Extension?.message) {
+    return unwrapMessage(message.viewOnceMessageV2Extension.message);
+  }
+  if (message.documentWithCaptionMessage?.message) {
+    return unwrapMessage(message.documentWithCaptionMessage.message);
+  }
+  return message;
+}
+
 class RelayDatabase {
   constructor(dbPath) {
     this.dbPath = dbPath;
@@ -880,7 +900,9 @@ async function connectToWhatsApp() {
       if (type !== 'notify' && !isHistory) return;
       for (const msg of messages) {
         if (!msg.message) continue;
-        const parsed = normalizeMessageRecord(await parseMessage(msg, isHistory));
+        const parsedRaw = await parseMessage(msg, isHistory);
+        if (!parsedRaw) continue;
+        const parsed = normalizeMessageRecord(parsedRaw);
         parsed.jid = getPreferredJid(parsed.jid);
         parsed.from = parsed.jid;
         const thread = messageStore[parsed.jid] || [];
@@ -1000,7 +1022,21 @@ async function connectToWhatsApp() {
           const rawJid = key.remoteJid;
           if (!rawJid) continue;
           const jid = getPreferredJid(rawJid);
-          const m = rawMsg.message;
+          let m = unwrapMessage(rawMsg.message);
+          if (!m) continue;
+
+          // Check if this is an ignored message type
+          const keys = Object.keys(m);
+          if (keys.length === 0) continue;
+          const isIgnored = keys.length === 1 && (
+            keys[0] === 'senderKeyDistributionMessage' ||
+            keys[0] === 'protocolMessage' ||
+            keys[0] === 'reactionMessage' ||
+            keys[0] === 'peerDataOperationRequestMessage' ||
+            keys[0] === 'emptyMessage'
+          );
+          if (isIgnored) continue;
+
           let content = '';
           let mediaType = 'text';
           // Extract text content from the most common history message shapes.
@@ -1090,7 +1126,20 @@ async function connectToWhatsApp() {
 
 // Parse message with media
 async function parseMessage(raw, skipMedia = false) {
-  const m = raw.message;
+  let m = unwrapMessage(raw.message);
+  if (!m) return null;
+
+  const keys = Object.keys(m);
+  if (keys.length === 0) return null;
+  const isIgnored = keys.length === 1 && (
+    keys[0] === 'senderKeyDistributionMessage' ||
+    keys[0] === 'protocolMessage' ||
+    keys[0] === 'reactionMessage' ||
+    keys[0] === 'peerDataOperationRequestMessage' ||
+    keys[0] === 'emptyMessage'
+  );
+  if (isIgnored) return null;
+
   let content = '';
   let mediaUrl = null;
   let mediaType = 'text';
