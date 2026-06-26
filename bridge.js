@@ -91,6 +91,19 @@ const chatStore = {};
 const lidToJid = {};  // "hex123@lid" -> "91987...@s.whatsapp.net"
 const jidToLid = {};  // "91987...@s.whatsapp.net" -> "hex123@lid"
 
+function clearInMemoryStores() {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  for (const key of Object.keys(messageStore)) delete messageStore[key];
+  for (const key of Object.keys(groupStore)) delete groupStore[key];
+  for (const key of Object.keys(contactStore)) delete contactStore[key];
+  for (const key of Object.keys(chatStore)) delete chatStore[key];
+  for (const key of Object.keys(lidToJid)) delete lidToJid[key];
+  for (const key of Object.keys(jidToLid)) delete jidToLid[key];
+}
+
 function addLidMapping(contact) {
   if (!contact) return;
   const id = contact.id;
@@ -304,6 +317,20 @@ class RelayDatabase {
       CREATE INDEX IF NOT EXISTS idx_messages_jid_timestamp
       ON messages(jid, timestamp, id);
     `);
+  }
+
+  clearAllData() {
+    try {
+      this.db.exec(`
+        DELETE FROM contacts;
+        DELETE FROM chats;
+        DELETE FROM messages;
+        DELETE FROM bridge_metadata;
+      `);
+      console.log('[Database] All data tables cleared successfully.');
+    } catch (e) {
+      console.error('[Database] Failed to clear tables:', e.message);
+    }
   }
 
   prepare() {
@@ -523,7 +550,7 @@ function sortedChats() {
   const chats = Object.values(chatStore).map(normalizeChat);
   const filtered = [];
   const seenPhoneJids = new Set();
-  
+
   for (const chat of chats) {
     if (chat.id && !chat.id.endsWith('@lid')) {
       filtered.push(chat);
@@ -532,7 +559,7 @@ function sortedChats() {
       }
     }
   }
-  
+
   for (const chat of chats) {
     if (chat.id && chat.id.endsWith('@lid')) {
       const phoneJid = lidToJid[chat.id];
@@ -541,7 +568,7 @@ function sortedChats() {
       }
     }
   }
-  
+
   return filtered.sort((a, b) => toTimestamp(b.timestamp) - toTimestamp(a.timestamp));
 }
 
@@ -708,7 +735,7 @@ function broadcastChats() {
 
 function chatDisplayName(jid) {
   let resolvedName = resolveContactName(jid);
-  
+
   // Format numeric fallback
   let phoneFallback = jid.split('@')[0];
   if (jid.endsWith('@lid')) {
@@ -938,9 +965,11 @@ async function disconnectWhatsApp() {
     }
   }
 
+  // Clear database and in-memory caches
+  database.clearAllData();
+  clearInMemoryStores();
+
   // Clear connector operator
-  database.setMetadata('connector_operator_id', null);
-  database.setMetadata('connector_operator_name', null);
   connectorOperatorId = null;
   connectorOperatorName = null;
   linkingOperator = null;
@@ -949,6 +978,8 @@ async function disconnectWhatsApp() {
   qrCodeData = null;
   io.emit('status', { status: 'disconnected', connectorOperatorId, connectorOperatorName });
   io.emit('qr', null);
+  io.emit('chats', []);
+  io.emit('groups', []);
 
   console.log('[Bridge] Restarting connection after disconnect to prepare QR code...');
   await connectToWhatsApp();
@@ -964,7 +995,7 @@ async function connectToWhatsApp() {
   try {
     if (sock) {
       console.log('[Bridge] Closing existing socket before connecting...');
-      try { sock.end(); } catch (e) {}
+      try { sock.end(); } catch (e) { }
       sock = null;
     }
 
@@ -994,14 +1025,32 @@ async function connectToWhatsApp() {
         const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
         connectionStatus = 'disconnected';
         io.emit('status', { status: 'disconnected', reason, connectorOperatorId, connectorOperatorName });
-        if (reason !== DisconnectReason.loggedOut) scheduleReconnect();
+        if (reason === DisconnectReason.loggedOut) {
+          console.log('[Bridge] Connection closed due to logout. Cleaning up session...');
+          await disconnectWhatsApp();
+        } else {
+          scheduleReconnect();
+        }
       }
 
       if (connection === 'open') {
         connectionStatus = 'connected';
         qrCodeData = null;
         reconnectDelay = 5000;
-        
+
+        const currentLoggedJid = sock.user?.id ? cleanJidToPhone(sock.user.id) : null;
+        if (currentLoggedJid) {
+          const storedJid = database.getMetadata('current_logged_jid');
+          if (storedJid && storedJid !== currentLoggedJid) {
+            console.log(`[Bridge] Detected number change! Stored: ${storedJid}, New: ${currentLoggedJid}. Clearing all old data.`);
+            database.clearAllData();
+            clearInMemoryStores();
+            io.emit('chats', []);
+            io.emit('groups', []);
+          }
+          database.setMetadata('current_logged_jid', currentLoggedJid);
+        }
+
         if (linkingOperator) {
           database.setMetadata('connector_operator_id', linkingOperator.id);
           database.setMetadata('connector_operator_name', linkingOperator.name);
@@ -1513,13 +1562,13 @@ app.post('/api/contacts/import', upload.single('file'), async (req, res) => {
   try {
     const content = fs.readFileSync(vcfPath, 'utf8');
     const parsedContacts = parseVcfContacts(content);
-    
+
     let imported = 0;
     let skipped = 0;
 
     for (const c of parsedContacts) {
       const jid = `${c.phone}@s.whatsapp.net`;
-      
+
       const exists = contactStore[jid] || database.db.prepare('SELECT 1 FROM contacts WHERE id = ?').get(jid);
       if (exists) {
         skipped++;
@@ -1536,7 +1585,7 @@ app.post('/api/contacts/import', upload.single('file'), async (req, res) => {
       imported++;
     }
 
-    try { fs.unlinkSync(vcfPath); } catch {}
+    try { fs.unlinkSync(vcfPath); } catch { }
 
     io.emit('contacts_updated');
     broadcastChats();
@@ -1544,7 +1593,7 @@ app.post('/api/contacts/import', upload.single('file'), async (req, res) => {
 
     res.json({ success: true, imported, skipped });
   } catch (err) {
-    try { fs.unlinkSync(vcfPath); } catch {}
+    try { fs.unlinkSync(vcfPath); } catch { }
     console.error('[Bridge] Contact import failed:', err.message);
     res.status(500).json({ error: err.message });
   }
