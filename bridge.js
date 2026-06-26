@@ -166,7 +166,7 @@ function normalizeChat(chat = {}) {
 
   // Refresh name if it's currently numeric/ambiguous or missing
   let currentName = chat.name;
-  const isAmbiguous = !currentName || /^\d+$/.test(currentName) || currentName.includes('@');
+  const isAmbiguous = !currentName || /^\+?\d+$/.test(currentName) || currentName.includes('@');
   if (isAmbiguous && id) {
     currentName = chatDisplayName(id);
   }
@@ -207,7 +207,7 @@ function normalizeMessageRecord(msg = {}) {
       }
     }
   }
-  if (resolvedSender && (resolvedSender.endsWith('@lid') || resolvedSender.endsWith('@s.whatsapp.net') || resolvedSender.includes(':') || /^\d+$/.test(resolvedSender))) {
+  if (resolvedSender && (resolvedSender.endsWith('@lid') || resolvedSender.endsWith('@s.whatsapp.net') || resolvedSender.includes(':') || /^\+?\d+$/.test(resolvedSender))) {
     resolvedSender = cleanJidToPhone(resolvedSender);
   }
 
@@ -637,9 +637,18 @@ function backfillContactNames() {
   for (const [jid, chat] of Object.entries(chatStore)) {
     if (chat.type !== 'personal') continue;
     const name = resolveContactName(jid);
-    if (name && chat.name !== name) {
-      chat.name = name;
-      updated = true;
+    if (name) {
+      if (chat.name !== name) {
+        chat.name = name;
+        updated = true;
+      }
+    } else {
+      const normalized = normalizeChat(chat);
+      if (chat.name !== normalized.name || chat.phone !== normalized.phone) {
+        chat.name = normalized.name;
+        chat.phone = normalized.phone;
+        updated = true;
+      }
     }
   }
   if (updated) {
@@ -711,7 +720,7 @@ function chatDisplayName(jid) {
   const formattedPhone = '+' + phoneFallback.split(':')[0];
 
   if (resolvedName) {
-    const isAmbiguous = !resolvedName || resolvedName.length <= 2 || /^\d+$/.test(resolvedName);
+    const isAmbiguous = !resolvedName || resolvedName.length <= 2 || /^\+?\d+$/.test(resolvedName);
     if (isAmbiguous && jid && !jid.endsWith('@g.us')) {
       return `${resolvedName} (${formattedPhone})`;
     }

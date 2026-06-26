@@ -627,10 +627,23 @@ function renderChatHeader() {
     return;
   }
 
-  const meta = (activeChat.type === 'group' || activeChat.type === 'community')
+  let meta = (activeChat.type === 'group' || activeChat.type === 'community')
     ? `${activeChat.participants || '?'} participants`
     : cleanJid(activeChat.phone || activeChat.id || '');
   let topDisplayName = cleanJid(activeChat.verifiedName || activeChat.name || activeChat.id);
+
+  if (activeChat.type === 'personal') {
+    const cleanId = cleanJid(activeChat.id);
+    const cleanPhone = activeChat.phone ? cleanJid(activeChat.phone) : '';
+    const isLidOrJidDisplayName = (topDisplayName === cleanId || /^\+?1\d{14}$/.test(topDisplayName.replace(/\s+/g, '')) || /^\+?\d{10,}$/.test(topDisplayName.replace(/\s+/g, '')));
+    if (isLidOrJidDisplayName && cleanPhone && cleanPhone !== topDisplayName) {
+      const originalDisplayName = topDisplayName;
+      topDisplayName = cleanPhone;
+      meta = originalDisplayName;
+    } else if (topDisplayName === cleanPhone && cleanId && cleanId !== cleanPhone) {
+      meta = cleanId;
+    }
+  }
   const isVerified = Boolean(activeChat.verifiedName);
   const verifiedBadge = isVerified ? `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="#0095f6" viewBox="0 0 16 16" style="margin-left:6px;vertical-align:middle;flex-shrink:0;" title="Verified Business"><path d="M10.067.87a2.89 2.89 0 0 0-4.134 0l-.622.622-2.08-.02a2.89 2.89 0 0 0-2.91 2.91l.02 2.08-.622.622a2.89 2.89 0 0 0 0 4.134l.622.622-.02 2.08a2.89 2.89 0 0 0 2.91 2.91l2.08-.02.622.622a2.89 2.89 0 0 0 4.134 0l.622-.622 2.08.02a2.89 2.89 0 0 0 2.91-2.91l-.02-2.08.622-.622a2.89 2.89 0 0 0 0-4.134l-.622-.622.02-2.08a2.89 2.89 0 0 0-2.91-2.91l-2.08.02-.622-.622zM8.14 10.146a.75.75 0 0 1-1.079-.02L4.697 7.731a.75.75 0 1 1 1.071-1.05l1.829 1.828L11.83 4.5a.75.75 0 1 1 1.06 1.06L8.14 10.147z"/></svg>` : '';
 
@@ -817,6 +830,13 @@ function renderChatList(chats) {
       displayName = 'Status Updates';
     } else if (chat.id.endsWith('@newsletter') && !chat.name) {
       displayName = 'Channel: ' + cleanJid(chat.id);
+    } else if (chat.type === 'personal') {
+      const cleanId = cleanJid(chat.id);
+      const cleanPhone = chat.phone ? cleanJid(chat.phone) : '';
+      const isLidOrJidDisplayName = (displayName === cleanId || /^\+?1\d{14}$/.test(displayName.replace(/\s+/g, '')) || /^\+?\d{10,}$/.test(displayName.replace(/\s+/g, '')));
+      if (isLidOrJidDisplayName && cleanPhone && cleanPhone !== displayName) {
+        displayName = cleanPhone;
+      }
     }
     
     const isVerified = Boolean(chat.verifiedName);
@@ -873,7 +893,12 @@ function renderContactsList() {
     item.className = 'chat-item';
     item.onclick = () => openContactChat(contact);
 
-    const cleanName = cleanJid(contact.name);
+    let cleanName = cleanJid(contact.name);
+    const cleanPhone = contact.phone ? cleanJid(contact.phone) : '';
+    const isLidOrJidName = (cleanName === cleanJid(contact.id) || /^\+?1\d{14}$/.test(cleanName.replace(/\s+/g, '')) || /^\+?\d{10,}$/.test(cleanName.replace(/\s+/g, '')));
+    if (isLidOrJidName && cleanPhone && cleanPhone !== cleanName) {
+      cleanName = cleanPhone;
+    }
     const avatarInitial = (cleanName.startsWith('+') ? cleanName.slice(1) : cleanName || '?')[0].toUpperCase();
     item.innerHTML = `
       <div class="chat-avatar personal">${avatarInitial}</div>
@@ -976,8 +1001,12 @@ function renderSearchResults(results) {
   const el = document.getElementById('searchResults');
   if (!results.length) { el.classList.remove('visible'); return; }
   el.innerHTML = results.map(r => {
-    const cleanName = cleanJid(r.name || r.phone);
+    let cleanName = cleanJid(r.name || r.phone);
     const cleanPhone = cleanJid(r.phone);
+    const isLidOrJidName = (cleanName === cleanJid(r.id) || /^\+?1\d{14}$/.test(cleanName.replace(/\s+/g, '')) || /^\+?\d{10,}$/.test(cleanName.replace(/\s+/g, '')));
+    if (isLidOrJidName && cleanPhone && cleanPhone !== cleanName) {
+      cleanName = cleanPhone;
+    }
     const avatarInitial = (cleanName.startsWith('+') ? cleanName.slice(1) : cleanName || '?')[0].toUpperCase();
     return `
       <div class="search-result-item" onclick="openChatById('${r.id}','${cleanName.replace(/'/g,"\\'")}')">
