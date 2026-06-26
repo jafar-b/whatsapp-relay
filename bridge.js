@@ -154,6 +154,71 @@ function toTimestamp(ts) {
   return 0;
 }
 
+const pendingResolutions = new Set();
+
+async function resolveLidToPhoneAsync(lid) {
+  if (!lid || !lid.endsWith('@lid')) return null;
+  if (lidToJid[lid]) return lidToJid[lid];
+  if (pendingResolutions.has(lid)) return null;
+
+  pendingResolutions.add(lid);
+
+  try {
+    if (sock && sock.signalRepository?.lidMapping) {
+      const pn = await sock.signalRepository.lidMapping.getPNForLID(lid);
+      if (pn) {
+        console.log(`[Bridge] Resolved LID ${lid} -> PN ${pn}`);
+        lidToJid[lid] = pn;
+        jidToLid[pn] = lid;
+
+        // Persist to contacts
+        const existing = contactStore[lid] || { id: lid };
+        existing.phoneNumber = pn;
+        contactStore[lid] = existing;
+        database.upsertContact(existing);
+
+        const existingPn = contactStore[pn] || { id: pn };
+        existingPn.lid = lid;
+        contactStore[pn] = existingPn;
+        database.upsertContact(existingPn);
+
+        return pn;
+      }
+    }
+  } catch (e) {
+    console.warn(`[Bridge] Error resolving LID ${lid}:`, e.message);
+  } finally {
+    pendingResolutions.delete(lid);
+  }
+
+  return null;
+}
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function resolveAllLidsFromStore() {
+  console.log('[Bridge] Starting background resolution for all stored LIDs...');
+  let resolvedCount = 0;
+  for (const jid of Object.keys(chatStore)) {
+    if (jid.endsWith('@lid') && !lidToJid[jid]) {
+      const pn = await resolveLidToPhoneAsync(jid);
+      if (pn) resolvedCount++;
+      await delay(1000);
+    }
+  }
+  for (const jid of Object.keys(contactStore)) {
+    if (jid.endsWith('@lid') && !lidToJid[jid]) {
+      const pn = await resolveLidToPhoneAsync(jid);
+      if (pn) resolvedCount++;
+      await delay(1000);
+    }
+  }
+  if (resolvedCount > 0) {
+    console.log(`[Bridge] Background resolution finished. Resolved ${resolvedCount} LIDs to phone numbers.`);
+    backfillContactNames();
+  }
+}
+
 function normalizeChat(chat = {}) {
   let phone = null;
   const id = chat.id;
@@ -164,6 +229,11 @@ function normalizeChat(chat = {}) {
       const phoneJid = lidToJid[id];
       if (phoneJid) {
         phone = phoneJid.split('@')[0].split(':')[0];
+      } else {
+        // Trigger background resolution!
+        resolveLidToPhoneAsync(id).then((pn) => {
+          if (pn) backfillContactNames();
+        });
       }
     }
   }
@@ -208,6 +278,9 @@ function normalizeMessageRecord(msg = {}) {
         const phoneJid = lidToJid[participantJid];
         if (phoneJid) {
           resolvedSender = resolveContactName(phoneJid) || cleanJidToPhone(phoneJid);
+        } else {
+          // Trigger background resolution!
+          resolveLidToPhoneAsync(participantJid);
         }
       } else if (participantJid.endsWith('@s.whatsapp.net')) {
         const lidJid = jidToLid[participantJid];
@@ -602,6 +675,10 @@ function getPreferredJid(jid) {
   if (jid.endsWith('@lid')) {
     const phoneJid = lidToJid[jid];
     if (phoneJid) return phoneJid;
+    else {
+      // Trigger background resolution!
+      resolveLidToPhoneAsync(jid);
+    }
   } else {
     const lidJid = jidToLid[jid];
     if (lidJid && chatStore[lidJid] && !chatStore[jid]) {
@@ -1063,6 +1140,7 @@ async function connectToWhatsApp() {
         console.log('[Bridge] Connected to WhatsApp!');
         await loadGroups();
         backfillContactNames();
+        resolveAllLidsFromStore();
       }
     });
 
@@ -1947,6 +2025,14 @@ io.on('connection', (socket) => {
   });
 
   socket.on('open_chat', ({ jid }) => {
+    if (jid.endsWith('@lid') && !lidToJid[jid]) {
+      resolveLidToPhoneAsync(jid).then((pn) => {
+        if (pn) {
+          io.emit('chats', sortedChats());
+        }
+      });
+    }
+
     // If in-memory store is cold (e.g. after a server restart) but SQLite has
     // persisted messages, hydrate the in-memory store from the DB now so the
     // operator sees chat history immediately on click.
