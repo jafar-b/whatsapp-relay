@@ -30,6 +30,7 @@ let reconnectDelay = 5000;
 const MAX_RECONNECT_DELAY = 300000;
 let reconnectTimer = null;
 let isConnecting = false;
+let isDisconnecting = false;
 
 // Retries unresolved @lid mappings periodically since Baileys' lid<->phone
 // mapping store fills in lazily and a single attempt at connect time often
@@ -138,61 +139,73 @@ function scheduleReconnect() {
 }
 
 async function disconnectWhatsApp() {
-  console.log('[Bridge] Disconnecting WhatsApp session...');
-  stopLidRetryTimer();
-  exhaustedHistoryJids.clear();
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
+  // sock.logout() below triggers Baileys' own 'connection.update' close handler
+  // (reason: loggedOut), which calls disconnectWhatsApp() again re-entrantly.
+  // Without this guard, that second call races the first and force-ends the
+  // socket (sock.end()) while the original logout request is still in flight,
+  // aborting it before WhatsApp's servers process the unlink - leaving the
+  // device shown as still linked even though the app cleared its local state.
+  if (isDisconnecting) return;
+  isDisconnecting = true;
+  try {
+    console.log('[Bridge] Disconnecting WhatsApp session...');
+    stopLidRetryTimer();
+    exhaustedHistoryJids.clear();
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
 
-  if (sock) {
-    try {
-      await sock.logout();
-    } catch (err) {
-      console.error('[Bridge] Error during sock.logout():', err.message);
+    if (sock) {
       try {
-        sock.end();
-      } catch (e) {
-        console.error('[Bridge] Error ending socket:', e.message);
+        await sock.logout();
+      } catch (err) {
+        console.error('[Bridge] Error during sock.logout():', err.message);
+        try {
+          sock.end();
+        } catch (e) {
+          console.error('[Bridge] Error ending socket:', e.message);
+        }
+      }
+      setSock(null);
+    }
+
+    const authPaths = [
+      path.join(ROOT_DIR, 'auth_info'),
+      path.resolve('./auth_info')
+    ];
+    for (const authPath of authPaths) {
+      if (fs.existsSync(authPath)) {
+        try {
+          fs.rmSync(authPath, { recursive: true, force: true });
+          console.log(`[Bridge] Cleared credentials directory at ${authPath}`);
+        } catch (e) {
+          console.error(`[Bridge] Error clearing directory ${authPath}:`, e.message);
+        }
       }
     }
-    setSock(null);
+
+    // Clear database and in-memory caches
+    database.clearAllData();
+    stores.clearInMemoryStores();
+
+    // Clear connector operator
+    stores.setConnectorOperator(null, null);
+    stores.setLinkingOperator(null);
+
+    connectionStatus = 'disconnected';
+    qrCodeData = null;
+    const { id: connectorOperatorId, name: connectorOperatorName } = stores.getConnectorOperator();
+    io.emit('status', { status: 'disconnected', connectorOperatorId, connectorOperatorName });
+    io.emit('qr', null);
+    io.emit('chats', []);
+    io.emit('groups', []);
+
+    console.log('[Bridge] Restarting connection after disconnect to prepare QR code...');
+    await connectToWhatsApp();
+  } finally {
+    isDisconnecting = false;
   }
-
-  const authPaths = [
-    path.join(ROOT_DIR, 'auth_info'),
-    path.resolve('./auth_info')
-  ];
-  for (const authPath of authPaths) {
-    if (fs.existsSync(authPath)) {
-      try {
-        fs.rmSync(authPath, { recursive: true, force: true });
-        console.log(`[Bridge] Cleared credentials directory at ${authPath}`);
-      } catch (e) {
-        console.error(`[Bridge] Error clearing directory ${authPath}:`, e.message);
-      }
-    }
-  }
-
-  // Clear database and in-memory caches
-  database.clearAllData();
-  stores.clearInMemoryStores();
-
-  // Clear connector operator
-  stores.setConnectorOperator(null, null);
-  stores.setLinkingOperator(null);
-
-  connectionStatus = 'disconnected';
-  qrCodeData = null;
-  const { id: connectorOperatorId, name: connectorOperatorName } = stores.getConnectorOperator();
-  io.emit('status', { status: 'disconnected', connectorOperatorId, connectorOperatorName });
-  io.emit('qr', null);
-  io.emit('chats', []);
-  io.emit('groups', []);
-
-  console.log('[Bridge] Restarting connection after disconnect to prepare QR code...');
-  await connectToWhatsApp();
 }
 
 // WhatsApp connection
