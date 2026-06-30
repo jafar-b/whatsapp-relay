@@ -1912,16 +1912,21 @@
     function cleanJid(val) {
       if (!val) return '';
       val = String(val).trim();
+      if (val.startsWith('LID: ')) return val;
       if (val.includes('@')) {
         const parts = val.split('@');
         const domain = parts[1];
-        if (domain === 's.whatsapp.net' || domain === 'lid') {
+        if (domain === 's.whatsapp.net') {
           const num = parts[0].split(':')[0];
           return num.startsWith('+') ? num : '+' + num;
+        }
+        if (domain === 'lid') {
+          return 'LID: ' + parts[0];
         }
         return parts[0];
       }
       if (val.includes(':')) {
+        if (/^[a-zA-Z]/.test(val)) return val;
         const num = val.split(':')[0];
         if (/^\d{8,}$/.test(num)) {
           return '+' + num;

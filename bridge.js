@@ -162,28 +162,42 @@ async function resolveLidToPhoneAsync(lid) {
   if (pendingResolutions.has(lid)) return null;
 
   pendingResolutions.add(lid);
+  console.log(`[Bridge] Starting resolution for LID: ${lid}`);
 
   try {
-    if (sock && sock.signalRepository?.lidMapping) {
-      const pn = await sock.signalRepository.lidMapping.getPNForLID(lid);
-      if (pn) {
-        console.log(`[Bridge] Resolved LID ${lid} -> PN ${pn}`);
-        lidToJid[lid] = pn;
-        jidToLid[pn] = lid;
+    if (!sock) {
+      console.log(`[Bridge] Cannot resolve LID ${lid}: sock is not initialized.`);
+      return null;
+    }
+    if (!sock.signalRepository) {
+      console.log(`[Bridge] Cannot resolve LID ${lid}: sock.signalRepository is undefined.`);
+      return null;
+    }
+    if (!sock.signalRepository.lidMapping) {
+      console.log(`[Bridge] Cannot resolve LID ${lid}: sock.signalRepository.lidMapping is undefined.`);
+      return null;
+    }
 
-        // Persist to contacts
-        const existing = contactStore[lid] || { id: lid };
-        existing.phoneNumber = pn;
-        contactStore[lid] = existing;
-        database.upsertContact(existing);
+    const pn = await sock.signalRepository.lidMapping.getPNForLID(lid);
+    if (pn) {
+      console.log(`[Bridge] Resolved LID ${lid} -> PN ${pn}`);
+      lidToJid[lid] = pn;
+      jidToLid[pn] = lid;
 
-        const existingPn = contactStore[pn] || { id: pn };
-        existingPn.lid = lid;
-        contactStore[pn] = existingPn;
-        database.upsertContact(existingPn);
+      // Persist to contacts
+      const existing = contactStore[lid] || { id: lid };
+      existing.phoneNumber = pn;
+      contactStore[lid] = existing;
+      database.upsertContact(existing);
 
-        return pn;
-      }
+      const existingPn = contactStore[pn] || { id: pn };
+      existingPn.lid = lid;
+      contactStore[pn] = existingPn;
+      database.upsertContact(existingPn);
+
+      return pn;
+    } else {
+      console.log(`[Bridge] Baileys getPNForLID returned null/undefined for LID ${lid}`);
     }
   } catch (e) {
     console.warn(`[Bridge] Error resolving LID ${lid}:`, e.message);
@@ -338,6 +352,53 @@ function unwrapMessage(message) {
     return unwrapMessage(message.documentWithCaptionMessage.message);
   }
   return message;
+}
+
+function parseInteractiveMessageText(m) {
+  if (!m) return '';
+
+  if (m.buttonsMessage) {
+    let txt = m.buttonsMessage.contentText || '';
+    const btns = (m.buttonsMessage.buttons || []).map(b => `[${b.buttonText?.displayText || ''}]`).join(' ');
+    if (btns) txt += `\n\n${btns}`;
+    return txt;
+  }
+
+  if (m.templateMessage) {
+    let txt = m.templateMessage.hydratedTemplate?.hydratedContentText || '';
+    const btns = (m.templateMessage.hydratedTemplate?.hydratedButtons || []).map(b => {
+      const t = b.quickReplyButton?.displayText || b.urlButton?.displayText || b.callButton?.displayText || '';
+      return t ? `[${t}]` : '';
+    }).filter(Boolean).join(' ');
+    if (btns) txt += `\n\n${btns}`;
+    return txt;
+  }
+
+  if (m.interactiveMessage) {
+    let txt = m.interactiveMessage.body?.text || '';
+    let btnList = [];
+    if (m.interactiveMessage.nativeFlowMessage?.buttons) {
+      for (const btn of m.interactiveMessage.nativeFlowMessage.buttons) {
+        try {
+          const params = typeof btn.buttonParamsJson === 'string' ? JSON.parse(btn.buttonParamsJson) : btn.buttonParamsJson;
+          const label = params?.display_text || btn.name;
+          if (label) btnList.push(`[${label}]`);
+        } catch {}
+      }
+    }
+    if (btnList.length > 0) txt += `\n\n${btnList.join(' ')}`;
+    return txt;
+  }
+
+  if (m.listMessage) {
+    let txt = m.listMessage.description || m.listMessage.title || '';
+    if (m.listMessage.buttonText) {
+      txt += `\n\n[Menu: ${m.listMessage.buttonText}]`;
+    }
+    return txt;
+  }
+
+  return '';
 }
 
 class RelayDatabase {
@@ -815,10 +876,13 @@ function chatDisplayName(jid) {
 
   // Format numeric fallback
   let phoneFallback = jid.split('@')[0];
+  let isUnresolvedLid = false;
   if (jid.endsWith('@lid')) {
     const phoneJid = lidToJid[jid];
     if (phoneJid) {
       phoneFallback = phoneJid.split('@')[0];
+    } else {
+      isUnresolvedLid = true;
     }
   }
   const formattedPhone = '+' + phoneFallback.split(':')[0];
@@ -826,13 +890,20 @@ function chatDisplayName(jid) {
   if (resolvedName) {
     const isAmbiguous = !resolvedName || resolvedName.length <= 2 || /^\+?\d+$/.test(resolvedName);
     if (isAmbiguous && jid && !jid.endsWith('@g.us')) {
+      if (isUnresolvedLid) {
+        return `${resolvedName} (LID: ${phoneFallback})`;
+      }
       return `${resolvedName} (${formattedPhone})`;
     }
     return resolvedName;
   }
 
-  if (jid.endsWith('@s.whatsapp.net') || jid.endsWith('@lid')) {
+  if (jid.endsWith('@s.whatsapp.net')) {
     return formattedPhone;
+  }
+
+  if (jid.endsWith('@lid')) {
+    return `LID: ${phoneFallback}`;
   }
 
   return jid?.split('@')[0]?.split(':')[0] || jid;
@@ -1324,6 +1395,18 @@ async function connectToWhatsApp() {
           } else if (m.locationMessage) {
             content = m.locationMessage.name || 'Shared location';
             mediaType = 'location';
+          } else if (m.contactMessage) {
+            content = `[Contact Card] ${m.contactMessage.displayName || 'Contact'}`;
+          } else if (m.contactsArrayMessage) {
+            const names = (m.contactsArrayMessage.contacts || []).map(c => c.displayName).filter(Boolean).join(', ');
+            content = `[Contacts] ${names || 'multiple contacts'}`;
+          } else if (m.pollCreationMessage || m.pollCreationMessageV2 || m.pollCreationMessageV3) {
+            const pollName = m.pollCreationMessage?.name || m.pollCreationMessageV2?.name || m.pollCreationMessageV3?.name || 'Poll';
+            content = `[Poll] Question: ${pollName}`;
+          } else if (m.groupInviteMessage) {
+            content = `[Group Invite] Group: ${m.groupInviteMessage.groupName || 'invite link'}`;
+          } else if (m.buttonsMessage || m.templateMessage || m.interactiveMessage || m.listMessage) {
+            content = parseInteractiveMessageText(m);
           } else {
             content = '[Unsupported message type]';
           }
@@ -1489,6 +1572,18 @@ async function parseMessage(raw, skipMedia = false) {
     const { degreesLatitude: lat, degreesLongitude: lng, name } = m.locationMessage;
     content = name || 'Shared location';
     mediaUrl = `https://maps.google.com/?q=${lat},${lng}`;
+  } else if (m.contactMessage) {
+    content = `[Contact Card] ${m.contactMessage.displayName || 'Contact'}`;
+  } else if (m.contactsArrayMessage) {
+    const names = (m.contactsArrayMessage.contacts || []).map(c => c.displayName).filter(Boolean).join(', ');
+    content = `[Contacts] ${names || 'multiple contacts'}`;
+  } else if (m.pollCreationMessage || m.pollCreationMessageV2 || m.pollCreationMessageV3) {
+    const pollName = m.pollCreationMessage?.name || m.pollCreationMessageV2?.name || m.pollCreationMessageV3?.name || 'Poll';
+    content = `[Poll] Question: ${pollName}`;
+  } else if (m.groupInviteMessage) {
+    content = `[Group Invite] Group: ${m.groupInviteMessage.groupName || 'invite link'}`;
+  } else if (m.buttonsMessage || m.templateMessage || m.interactiveMessage || m.listMessage) {
+    content = parseInteractiveMessageText(m);
   } else {
     content = '[Unsupported message type]';
   }
@@ -2025,6 +2120,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('open_chat', ({ jid }) => {
+    console.log(`[Bridge] open_chat event received for JID: ${jid}`);
     if (jid.endsWith('@lid') && !lidToJid[jid]) {
       resolveLidToPhoneAsync(jid).then((pn) => {
         if (pn) {
