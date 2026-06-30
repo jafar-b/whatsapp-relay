@@ -349,6 +349,15 @@ function parseInteractiveMessageText(m) {
     return txt;
   }
 
+  if (m.highlyStructuredMessage) {
+    // hydratedHsm carries the same shape as templateMessage.
+    return parseInteractiveMessageText({ templateMessage: m.highlyStructuredMessage.hydratedHsm });
+  }
+
+  if (m.templateButtonReplyMessage) {
+    return m.templateButtonReplyMessage.selectedDisplayText || m.templateButtonReplyMessage.selectedId || '';
+  }
+
   return '';
 }
 

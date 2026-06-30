@@ -31,6 +31,26 @@ const MAX_RECONNECT_DELAY = 300000;
 let reconnectTimer = null;
 let isConnecting = false;
 
+// Retries unresolved @lid mappings periodically since Baileys' lid<->phone
+// mapping store fills in lazily and a single attempt at connect time often
+// misses LIDs that resolve only after more contact/history sync traffic.
+const LID_RETRY_INTERVAL_MS = 10 * 60 * 1000;
+let lidRetryTimer = null;
+
+function stopLidRetryTimer() {
+  if (lidRetryTimer) {
+    clearInterval(lidRetryTimer);
+    lidRetryTimer = null;
+  }
+}
+
+function startLidRetryTimer() {
+  stopLidRetryTimer();
+  lidRetryTimer = setInterval(() => {
+    stores.resolveAllLidsFromStore();
+  }, LID_RETRY_INTERVAL_MS);
+}
+
 function init(deps) {
   ({ stores, database, io, ROOT_DIR, MEDIA_DIR } = deps);
 }
@@ -56,6 +76,7 @@ function scheduleReconnect() {
 
 async function disconnectWhatsApp() {
   console.log('[Bridge] Disconnecting WhatsApp session...');
+  stopLidRetryTimer();
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
@@ -149,6 +170,7 @@ async function connectToWhatsApp() {
       }
 
       if (connection === 'close') {
+        stopLidRetryTimer();
         const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
         connectionStatus = 'disconnected';
         const { id: connectorOperatorId, name: connectorOperatorName } = stores.getConnectorOperator();
@@ -193,6 +215,7 @@ async function connectToWhatsApp() {
         await loadGroups();
         stores.backfillContactNames();
         stores.resolveAllLidsFromStore();
+        startLidRetryTimer();
       }
     });
 
@@ -338,6 +361,27 @@ async function connectToWhatsApp() {
           let m = stores.unwrapMessage(rawMsg.message);
           if (!m) continue;
 
+          // History messages can also carry verified business name certs;
+          // capture them the same way the live messages.upsert handler does,
+          // otherwise business contacts backfilled via history never get a name.
+          if (!jid.endsWith('@g.us')) {
+            const verifiedName = rawMsg.verifiedBizName || rawMsg.verifiedName;
+            const pushName = rawMsg.pushName;
+            if (verifiedName || pushName) {
+              if (!contactStore[jid]) contactStore[jid] = { id: jid };
+              let contactUpdated = false;
+              if (verifiedName && contactStore[jid].verifiedName !== verifiedName) {
+                contactStore[jid].verifiedName = verifiedName;
+                contactUpdated = true;
+              }
+              if (pushName && !contactStore[jid].name && contactStore[jid].notify !== pushName) {
+                contactStore[jid].notify = pushName;
+                contactUpdated = true;
+              }
+              if (contactUpdated) database.upsertContact(contactStore[jid]);
+            }
+          }
+
           // Check if this is an ignored message type
           const keys = Object.keys(m);
           if (keys.length === 0) continue;
@@ -385,7 +429,7 @@ async function connectToWhatsApp() {
             content = `[Poll] Question: ${pollName}`;
           } else if (m.groupInviteMessage) {
             content = `[Group Invite] Group: ${m.groupInviteMessage.groupName || 'invite link'}`;
-          } else if (m.buttonsMessage || m.templateMessage || m.interactiveMessage || m.listMessage) {
+          } else if (m.buttonsMessage || m.templateMessage || m.interactiveMessage || m.listMessage || m.highlyStructuredMessage || m.templateButtonReplyMessage) {
             content = stores.parseInteractiveMessageText(m);
           } else {
             content = '[Unsupported message type]';
@@ -562,7 +606,7 @@ async function parseMessage(raw, skipMedia = false) {
     content = `[Poll] Question: ${pollName}`;
   } else if (m.groupInviteMessage) {
     content = `[Group Invite] Group: ${m.groupInviteMessage.groupName || 'invite link'}`;
-  } else if (m.buttonsMessage || m.templateMessage || m.interactiveMessage || m.listMessage) {
+  } else if (m.buttonsMessage || m.templateMessage || m.interactiveMessage || m.listMessage || m.highlyStructuredMessage || m.templateButtonReplyMessage) {
     content = stores.parseInteractiveMessageText(m);
   } else {
     content = '[Unsupported message type]';
