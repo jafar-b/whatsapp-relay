@@ -80,8 +80,14 @@
       <button class="btn btn-ghost" onclick="connectBridge()">Connect Bridge</button>
       <span id="whatsappControlContainer"></span>
       <button class="btn btn-ghost" onclick="triggerImportContacts()">Import Contacts</button>
+      <button class="btn btn-ghost mobile-only-btn" onclick="switchTab('operators', document.querySelector('.panel-tab'))">Dashboard Info</button>
       <button class="btn btn-primary" onclick="switchToCreate()">+ New Group</button>
     </div>
+    <button class="mobile-menu-toggle" id="mobileMenuToggle" onclick="toggleMobileMenu()" aria-label="Toggle menu">
+      <svg viewBox="0 0 24 24" width="24" height="24">
+        <path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z" fill="currentColor"/>
+      </svg>
+    </button>
   </div>
 
   <!-- Main -->
@@ -121,6 +127,11 @@
         <div class="chat-topbar">
           <div class="chat-topbar-main">
             <div class="chat-topbar-info">
+              <button class="mobile-back-btn" onclick="backToSidebar()" aria-label="Back to conversations">
+                <svg viewBox="0 0 24 24" width="24" height="24">
+                  <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" fill="currentColor"/>
+                </svg>
+              </button>
               <div class="chat-topbar-avatar" id="chatTopAvatar">G</div>
               <div>
                 <div class="chat-topbar-name" id="chatTopName">—</div>
@@ -200,6 +211,15 @@
 
     <!-- Right Panel -->
     <div class="right-panel">
+      <div class="panel-mobile-header">
+        <button class="panel-back-btn" onclick="backToSidebar()" aria-label="Back to conversations">
+          <svg viewBox="0 0 24 24" width="20" height="20">
+            <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" fill="currentColor"/>
+          </svg>
+          <span>Back</span>
+        </button>
+        <div class="panel-title-text">Dashboard Info</div>
+      </div>
       <div class="panel-tabs">
         <div class="panel-tab active" onclick="switchTab('operators',this)">Operators</div>
         <div class="panel-tab" onclick="switchTab('groups',this)">Groups</div>

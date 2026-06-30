@@ -613,6 +613,15 @@
       if (socket?.connected) {
         socket.emit('open_chat', { jid: chat.id });
       }
+
+      // Transition to chat view on mobile
+      const main = document.querySelector('.main');
+      if (main) {
+        main.classList.remove('view-chats');
+        main.classList.remove('view-panel');
+        main.classList.add('view-chat');
+      }
+      closeMobileMenu();
     }
 
     function updateChatItemHighlight() {
@@ -1128,6 +1137,14 @@
       document.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
       el.classList.add('active');
       renderPanel();
+
+      const main = document.querySelector('.main');
+      if (main) {
+        main.classList.remove('view-chats');
+        main.classList.remove('view-chat');
+        main.classList.add('view-panel');
+      }
+      closeMobileMenu();
     }
 
     function switchToCreate() {
@@ -1135,6 +1152,14 @@
       document.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
       document.getElementById('createTab').classList.add('active');
       renderPanel();
+
+      const main = document.querySelector('.main');
+      if (main) {
+        main.classList.remove('view-chats');
+        main.classList.remove('view-chat');
+        main.classList.add('view-panel');
+      }
+      closeMobileMenu();
     }
 
     function renderPanel() {
@@ -1543,3 +1568,51 @@
     const currentOrigin = window.location.protocol.startsWith('http') ? window.location.origin : bridgeUrl;
     connectBridgeDirect(currentOrigin);
     initSidebarResize();
+
+    // ─── Mobile View Actions ──────────────────────────────────────────────────────
+    function backToSidebar() {
+      const main = document.querySelector('.main');
+      if (main) {
+        main.classList.remove('view-chat');
+        main.classList.remove('view-panel');
+        main.classList.add('view-chats');
+      }
+    }
+
+    function toggleMobileMenu() {
+      const menu = document.querySelector('.topbar-right');
+      if (menu) {
+        menu.classList.toggle('open');
+      }
+    }
+
+    function closeMobileMenu() {
+      const menu = document.querySelector('.topbar-right');
+      if (menu) {
+        menu.classList.remove('open');
+      }
+    }
+
+    // Handle click-away for mobile dropdown menu and message actions touch-toggle
+    document.addEventListener('click', (e) => {
+      // 1. Mobile topbar menu click-away
+      const menu = document.querySelector('.topbar-right');
+      const toggle = document.getElementById('mobileMenuToggle');
+      if (menu && toggle && !menu.contains(e.target) && !toggle.contains(e.target)) {
+        menu.classList.remove('open');
+      }
+
+      // 2. Touch bubble actions toggle (mobile-friendly edit/delete)
+      const bubble = e.target.closest('.msg-bubble');
+      if (bubble) {
+        // Toggle actions for this bubble and close all others
+        const wasActive = bubble.classList.contains('show-actions');
+        document.querySelectorAll('.msg-bubble').forEach(b => b.classList.remove('show-actions'));
+        if (!wasActive) {
+          bubble.classList.add('show-actions');
+        }
+      } else {
+        // Clicked outside a bubble, close all actions
+        document.querySelectorAll('.msg-bubble').forEach(b => b.classList.remove('show-actions'));
+      }
+    });

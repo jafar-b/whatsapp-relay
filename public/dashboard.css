@@ -1548,3 +1548,306 @@
     input[type=file] {
       display: none;
     }
+
+    /* ─── Responsive Styles ──────────────────────────────────────────────────────── */
+    
+    /* Default state for mobile back buttons & mobile header */
+    .mobile-back-btn,
+    .panel-mobile-header,
+    .mobile-menu-toggle {
+      display: none;
+    }
+
+    @media (max-width: 768px) {
+      .topbar {
+        position: relative;
+        z-index: 110;
+        padding: 0 16px;
+      }
+
+      /* Logo and Pill adjustments */
+      .logo {
+        font-size: 14px;
+      }
+      
+      .status-pill {
+        padding: 3px 8px;
+        font-size: 10px;
+        gap: 4px;
+      }
+
+      .mobile-menu-toggle {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--text);
+        cursor: pointer;
+        padding: 6px;
+        border-radius: 6px;
+        transition: all 0.15s;
+        width: 32px;
+        height: 32px;
+      }
+
+      .mobile-menu-toggle:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+
+      .mobile-menu-toggle svg {
+        width: 18px;
+        height: 18px;
+      }
+
+      /* Convert topbar-right into an absolute dropdown */
+      .topbar-right {
+        display: none;
+        position: absolute;
+        top: 60px;
+        right: 16px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 12px;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+        z-index: 100;
+        width: 220px;
+        animation: fadeDown 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+
+      @keyframes fadeDown {
+        from {
+          opacity: 0;
+          transform: translateY(-8px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      .topbar-right.open {
+        display: flex;
+      }
+
+      .topbar-right .btn {
+        width: 100%;
+        text-align: center;
+        justify-content: center;
+      }
+
+      .topbar-right .operator-badge {
+        text-align: center;
+        padding-bottom: 8px;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 4px;
+      }
+
+      /* Main container layout switch to sliding columns */
+      .main {
+        display: flex;
+        grid-template-columns: none !important;
+        width: 100%;
+        overflow: hidden;
+        position: relative;
+      }
+
+      .sidebar,
+      .chat-area,
+      .right-panel {
+        width: 100% !important;
+        flex-shrink: 0;
+        transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+
+      .sidebar-resizer {
+        display: none !important;
+      }
+
+      /* Sliding transition states */
+      .main.view-chats .sidebar,
+      .main.view-chats .chat-area,
+      .main.view-chats .right-panel {
+        transform: translateX(0);
+      }
+
+      .main.view-chat .sidebar,
+      .main.view-chat .chat-area,
+      .main.view-chat .right-panel {
+        transform: translateX(-100%);
+      }
+
+      .main.view-panel .sidebar,
+      .main.view-panel .chat-area,
+      .main.view-panel .right-panel {
+        transform: translateX(-200%);
+      }
+
+      /* Sidebar styling improvements */
+      .sidebar-tabs {
+        display: flex;
+        flex-wrap: nowrap !important;
+        overflow-x: auto;
+        padding: 8px 12px;
+        gap: 6px;
+        -webkit-overflow-scrolling: touch;
+        scroll-behavior: smooth;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .sidebar-tabs::-webkit-scrollbar {
+        display: none;
+      }
+
+      .tab-btn {
+        flex: 0 0 auto !important;
+        padding: 8px 14px;
+        font-size: 10px;
+      }
+
+      /* Back buttons styling */
+      .mobile-back-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: transparent;
+        border: none;
+        color: var(--text);
+        cursor: pointer;
+        padding: 6px;
+        border-radius: 50%;
+        margin-right: 4px;
+        transition: background 0.15s;
+      }
+
+      .mobile-back-btn:hover {
+        background: var(--surface2);
+        color: var(--accent);
+      }
+
+      .mobile-back-btn svg {
+        width: 22px;
+        height: 22px;
+      }
+
+      /* Panel mobile header styling */
+      .panel-mobile-header {
+        display: flex;
+        align-items: center;
+        padding: 14px 16px;
+        background: var(--surface);
+        border-bottom: 1px solid var(--border);
+        gap: 12px;
+      }
+
+      .panel-back-btn {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--text);
+        padding: 6px 12px;
+        border-radius: 6px;
+        font-size: 11px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.15s;
+      }
+
+      .panel-back-btn:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+
+      .panel-back-btn svg {
+        fill: currentColor;
+      }
+
+      .panel-title-text {
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      /* Chat topbar wrapping on narrow screens */
+      .chat-topbar {
+        padding: 10px 16px;
+      }
+
+      .chat-topbar-main {
+        gap: 10px;
+      }
+
+      .chat-topbar-avatar {
+        width: 30px;
+        height: 30px;
+        font-size: 12px;
+      }
+
+      .chat-topbar-name {
+        font-size: 13px;
+      }
+
+      .assignment-wrap {
+        gap: 6px;
+      }
+
+      .assignment-pill {
+        padding: 4px 8px;
+        font-size: 9px;
+      }
+
+      .assignment-actions .btn {
+        padding: 4px 10px;
+        font-size: 10px;
+      }
+
+      /* Message input styling adjustments */
+      .input-bar {
+        padding: 8px 12px;
+      }
+
+      .message-input {
+        padding: 8px 12px;
+        font-size: 12px;
+      }
+
+      .attach-btn,
+      .send-btn {
+        width: 36px;
+        height: 36px;
+      }
+    }
+
+    @media (max-width: 480px) {
+      /* Stack assignment information below avatar/name on very small screens */
+      .chat-topbar-main {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+      }
+
+      .assignment-wrap {
+        width: 100%;
+        justify-content: space-between;
+        border-top: 1px solid var(--border);
+        padding-top: 8px;
+      }
+
+      .msg-bubble {
+        max-width: 85%;
+      }
+
+      /* On mobile touch devices, allow display of bubble actions when active */
+      .msg-bubble.show-actions .msg-actions {
+        display: flex !important;
+      }
+    }
