@@ -51,6 +51,69 @@ function startLidRetryTimer() {
   }, LID_RETRY_INTERVAL_MS);
 }
 
+// Tracks in-flight on-demand history requests (sock.fetchMessageHistory) keyed
+// by jid, so the 'messaging-history.set' handler can resolve the matching
+// caller once WhatsApp sends the older messages back, instead of the caller
+// having no way to know when/if the response arrived.
+const pendingHistoryRequests = new Map(); // jid -> { resolve, timer }
+const HISTORY_REQUEST_TIMEOUT_MS = 15000;
+// Jids WhatsApp has told us (via an empty on-demand response) have no more
+// history before our oldest known message. Avoids re-asking on every click.
+const exhaustedHistoryJids = new Set();
+
+function resolvePendingHistoryRequest(jid) {
+  const pending = pendingHistoryRequests.get(jid);
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  pendingHistoryRequests.delete(jid);
+  pending.resolve(true);
+}
+
+// Asks WhatsApp itself for older messages of `jid`, anchored on the oldest
+// message we currently have locally. WhatsApp streams the result back through
+// the same 'messaging-history.set' event used for the initial sync, which
+// already persists everything it receives via addMessageToStore.
+async function requestOlderHistory(jid, count = 50) {
+  if (!sock || connectionStatus !== 'connected') {
+    return { ok: false, message: 'Not connected to WhatsApp' };
+  }
+  if (exhaustedHistoryJids.has(jid)) {
+    return { ok: true, added: 0, hasMore: false, exhausted: true };
+  }
+  if (pendingHistoryRequests.has(jid)) {
+    return { ok: false, message: 'A history request for this chat is already in progress' };
+  }
+  const existing = stores.getMessagesForJid(jid);
+  const oldest = existing[0];
+  if (!oldest) {
+    return { ok: false, message: 'No anchor message available for this chat' };
+  }
+
+  const countBefore = existing.length;
+  const key = { remoteJid: jid, fromMe: Boolean(oldest.fromMe), id: oldest.id };
+  const timestampMs = stores.toTimestamp(oldest.timestamp) * 1000;
+
+  try {
+    await sock.fetchMessageHistory(Math.min(count, 50), key, timestampMs);
+  } catch (e) {
+    console.error(`[Bridge] fetchMessageHistory request failed for ${jid}:`, e.message);
+    return { ok: false, message: e.message };
+  }
+
+  const arrived = await new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingHistoryRequests.delete(jid);
+      resolve(false);
+    }, HISTORY_REQUEST_TIMEOUT_MS);
+    pendingHistoryRequests.set(jid, { resolve, timer });
+  });
+
+  const countAfter = stores.getMessagesForJid(jid).length;
+  const added = Math.max(0, countAfter - countBefore);
+  if (added === 0) exhaustedHistoryJids.add(jid);
+  return { ok: true, timedOut: !arrived, added, hasMore: added > 0 };
+}
+
 function init(deps) {
   ({ stores, database, io, ROOT_DIR, MEDIA_DIR } = deps);
 }
@@ -77,6 +140,7 @@ function scheduleReconnect() {
 async function disconnectWhatsApp() {
   console.log('[Bridge] Disconnecting WhatsApp session...');
   stopLidRetryTimer();
+  exhaustedHistoryJids.clear();
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
@@ -327,6 +391,12 @@ async function connectToWhatsApp() {
     });
 
     sock.ev.on('messaging-history.set', ({ chats, contacts, messages, isLatest }) => {
+      // On-demand responses (from requestOlderHistory / "load older messages")
+      // are flagged by Baileys with isLatest === undefined, unlike regular
+      // connect-time syncs which always pass a boolean. Use that to keep the
+      // MAX_MESSAGES_PER_CHAT cap for bulk initial sync while not discarding
+      // history a user explicitly asked to backfill.
+      const isOnDemand = isLatest === undefined;
       // --- Process contacts and build lid<->jid map ---
       for (const contact of contacts || []) {
         contactStore[contact.id] = { ...contactStore[contact.id], ...contact };
@@ -350,6 +420,7 @@ async function connectToWhatsApp() {
       }
       // --- Process history messages (this was the missing piece!) ---
       let historyMsgCount = 0;
+      const touchedJids = new Set();
       for (const rawMsg of messages || []) {
         try {
           // History messages arrive pre-parsed; they have a .message field like live messages.
@@ -456,7 +527,8 @@ async function connectToWhatsApp() {
           };
           if (!msgRecord.id || !msgRecord.jid) continue;
           // addMessageToStore deduplicates, sorts, trims, and persists to DB.
-          stores.addMessageToStore(msgRecord);
+          stores.addMessageToStore(msgRecord, { skipTrim: isOnDemand });
+          touchedJids.add(jid);
           historyMsgCount++;
         } catch (histErr) {
           // Don't let one bad history message crash the entire sync.
@@ -467,6 +539,11 @@ async function connectToWhatsApp() {
       stores.backfillContactNames();
       stores.saveStore();
       console.log(`[Bridge] History sync: ${chats?.length || 0} chats, ${contacts?.length || 0} contacts, ${historyMsgCount} messages (isLatest=${isLatest})`);
+      // Resolve any on-demand history requests (from "load older messages")
+      // waiting on one of the jids that just received new messages.
+      for (const jid of touchedJids) {
+        resolvePendingHistoryRequest(jid);
+      }
     });
 
     sock.ev.on('chats.upsert', (chats) => {
@@ -673,4 +750,5 @@ module.exports = {
   connectToWhatsApp,
   disconnectWhatsApp,
   loadGroups,
+  requestOlderHistory,
 };

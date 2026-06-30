@@ -189,7 +189,7 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
     }
   });
 
-  app.get('/api/messages', (req, res) => {
+  app.get('/api/messages', async (req, res) => {
     const { jid, limit = 50, before } = req.query;
     if (!jid) {
       const allMsgs = Object.values(stores.messageStore)
@@ -218,11 +218,28 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
     hydrate(jid);
     if (altJid) hydrate(altJid);
 
-    let msgs = stores.getMessagesForJid(jid);
-    if (before) {
+    const filterToBefore = (list) => {
+      if (!before) return list;
       const beforeTs = Number(before);
-      msgs = msgs.filter((msg) => stores.toTimestamp(msg.timestamp) < beforeTs);
+      return list.filter((msg) => stores.toTimestamp(msg.timestamp) < beforeTs);
+    };
+
+    let msgs = filterToBefore(stores.getMessagesForJid(jid));
+
+    // Local store had nothing older than the requested cursor — ask WhatsApp
+    // itself for more history (on-demand sync) before giving up, since the
+    // local cache only ever holds what's already been synced/received.
+    if (before && msgs.length === 0) {
+      try {
+        const result = await whatsapp.requestOlderHistory(jid, Number(limit));
+        if (result.ok && result.added > 0) {
+          msgs = filterToBefore(stores.getMessagesForJid(jid));
+        }
+      } catch (e) {
+        console.warn(`[Bridge] On-demand history fetch failed for ${jid}:`, e.message);
+      }
     }
+
     const total = msgs.length;
     const sliced = msgs.slice(-Number(limit));
     res.json({ messages: sliced, hasMore: total > sliced.length, total, chat: stores.normalizeChat(stores.chatStore[jid]) || null });

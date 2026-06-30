@@ -561,7 +561,7 @@ function saveStore() {
   }, CONFIG.SAVE_DEBOUNCE_MS);
 }
 
-function addMessageToStore(msg) {
+function addMessageToStore(msg, options = {}) {
   const normalized = normalizeMessageRecord(msg);
   const jid = normalized.jid;
   if (!jid || !normalized.id) return normalized;
@@ -570,7 +570,10 @@ function addMessageToStore(msg) {
   if (existingIndex >= 0) messageStore[jid][existingIndex] = normalized;
   else messageStore[jid].push(normalized);
   messageStore[jid].sort((a, b) => toTimestamp(a.timestamp) - toTimestamp(b.timestamp));
-  if (messageStore[jid].length > CONFIG.MAX_MESSAGES_PER_CHAT) {
+  // Skipped for on-demand history backfill ("load older messages"): trimming
+  // to the most recent N here would discard the older messages immediately
+  // after fetching them once a thread is already at the cap.
+  if (!options.skipTrim && messageStore[jid].length > CONFIG.MAX_MESSAGES_PER_CHAT) {
     messageStore[jid] = messageStore[jid].slice(-CONFIG.MAX_MESSAGES_PER_CHAT);
   }
   database.upsertMessage(normalized);
