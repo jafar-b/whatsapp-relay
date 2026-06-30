@@ -724,6 +724,7 @@
       const row = document.createElement('div');
       row.id = 'msg-' + msg.id;
       row.className = 'message-row ' + (outgoing ? 'outgoing' : 'incoming');
+      row.dataset.timestamp = msg.timestamp || '';
       let resolvedSender = cleanJid(msg.sender);
       const senderName = outgoing
         ? (msg.operatorName || resolvedSender || 'Unknown')
@@ -863,31 +864,16 @@
       const jid = activeChat.id;
       const area = document.getElementById('messagesArea');
       const firstMsgRow = area.querySelector('.message-row');
-      let beforeTs = null;
-      if (firstMsgRow) {
-        const id = firstMsgRow.id.replace('msg-', '');
-        // find timestamp from our local data
-        const existingTimestamps = Array.from(area.querySelectorAll('.message-row')).map(el => {
-          const t = el.querySelector('.msg-time')?.textContent?.trim();
-          return t;
-        });
-      }
-      // Use REST API for pagination
-      const firstExisting = area.querySelector('.message-row');
-      let before = null;
-      if (firstExisting) {
-        const id = firstExisting.id.replace('msg-', '');
-        // We stored messages raw, find the earliest timestamp
-        // Simpler: use REST API
-      }
-      // Use fetch for older
+      const before = firstMsgRow?.dataset.timestamp || null;
+
       (async () => {
         try {
-          let url = `${bridgeUrl}/api/messages?jid=${encodeURIComponent(jid)}&limit=30`;
           if (chatHasMore[jid] === false) {
             showToast('No more messages to load', 'error');
             return;
           }
+          let url = `${bridgeUrl}/api/messages?jid=${encodeURIComponent(jid)}&limit=30`;
+          if (before) url += `&before=${encodeURIComponent(before)}`;
           const res = await fetch(url);
           const data = await res.json();
           const msgs = data.messages || data;
