@@ -390,7 +390,7 @@ async function connectToWhatsApp() {
       stores.saveStore();
     });
 
-    sock.ev.on('messaging-history.set', ({ chats, contacts, messages, isLatest }) => {
+    sock.ev.on('messaging-history.set', async ({ chats, contacts, messages, isLatest }) => {
       // On-demand responses (from requestOlderHistory / "load older messages")
       // are flagged by Baileys with isLatest === undefined, unlike regular
       // connect-time syncs which always pass a boolean. Use that to keep the
@@ -467,7 +467,11 @@ async function connectToWhatsApp() {
 
           let content = '';
           let mediaType = 'text';
+          let mediaUrl = null;
           // Extract text content from the most common history message shapes.
+          // Media is only downloaded for on-demand requests (user clicked "load
+          // older messages") - the bulk initial sync can cover thousands of
+          // messages and would be too slow/heavy to fetch media for.
           if (m.conversation) {
             content = m.conversation;
           } else if (m.extendedTextMessage?.text) {
@@ -475,18 +479,72 @@ async function connectToWhatsApp() {
           } else if (m.imageMessage) {
             content = m.imageMessage.caption || '';
             mediaType = 'image';
+            if (isOnDemand) {
+              try {
+                const buffer = await downloadMediaMessage(rawMsg, 'buffer', {});
+                const ext = mime.extension(m.imageMessage.mimetype) || 'jpg';
+                const filename = `${Date.now()}.${ext}`;
+                fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
+                mediaUrl = `/media/${filename}`;
+              } catch (e) {
+                console.error('[Bridge] History image download failed:', e.message);
+              }
+            }
           } else if (m.videoMessage) {
             content = m.videoMessage.caption || '';
             mediaType = 'video';
+            if (isOnDemand) {
+              try {
+                const buffer = await downloadMediaMessage(rawMsg, 'buffer', {});
+                const ext = mime.extension(m.videoMessage.mimetype) || 'mp4';
+                const filename = `${Date.now()}.${ext}`;
+                fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
+                mediaUrl = `/media/${filename}`;
+              } catch (e) {
+                console.error('[Bridge] History video download failed:', e.message);
+              }
+            }
           } else if (m.audioMessage) {
             content = m.audioMessage.ptt ? 'Voice message' : 'Audio file';
             mediaType = m.audioMessage.ptt ? 'voice' : 'audio';
+            if (isOnDemand) {
+              try {
+                const buffer = await downloadMediaMessage(rawMsg, 'buffer', {});
+                const ext = mime.extension(m.audioMessage.mimetype) || 'ogg';
+                const filename = `${Date.now()}.${ext}`;
+                fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
+                mediaUrl = `/media/${filename}`;
+              } catch (e) {
+                console.error('[Bridge] History audio download failed:', e.message);
+              }
+            }
           } else if (m.documentMessage) {
             content = `Document: ${m.documentMessage.fileName || 'file'}`;
             mediaType = 'document';
+            if (isOnDemand) {
+              try {
+                const buffer = await downloadMediaMessage(rawMsg, 'buffer', {});
+                const safeName = (m.documentMessage.fileName || 'document').replace(/[^a-zA-Z0-9._-]/g, '_');
+                const filename = `${Date.now()}-${safeName}`;
+                fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
+                mediaUrl = `/media/${filename}`;
+              } catch (e) {
+                console.error('[Bridge] History document download failed:', e.message);
+              }
+            }
           } else if (m.stickerMessage) {
             content = 'Sticker';
             mediaType = 'sticker';
+            if (isOnDemand) {
+              try {
+                const buffer = await downloadMediaMessage(rawMsg, 'buffer', {});
+                const filename = `${Date.now()}.webp`;
+                fs.writeFileSync(path.join(MEDIA_DIR, filename), buffer);
+                mediaUrl = `/media/${filename}`;
+              } catch (e) {
+                console.error('[Bridge] History sticker download failed:', e.message);
+              }
+            }
           } else if (m.locationMessage) {
             content = m.locationMessage.name || 'Shared location';
             mediaType = 'location';
@@ -516,7 +574,7 @@ async function connectToWhatsApp() {
             operatorName: null,
             content,
             mediaType,
-            mediaUrl: null,
+            mediaUrl,
             fileName: m.documentMessage?.fileName || null,
             mimetype: m.imageMessage?.mimetype || m.videoMessage?.mimetype || m.audioMessage?.mimetype || m.documentMessage?.mimetype || null,
             timestamp: stores.toTimestamp(rawMsg.messageTimestamp),
