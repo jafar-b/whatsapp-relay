@@ -9,3 +9,4 @@ relay.sqlite*
 npm-debug.log*
 dist/
 build/
+.devdbrc

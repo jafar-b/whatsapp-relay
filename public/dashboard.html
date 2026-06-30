@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WA Relay — Operator Dashboard</title>
+  <link
+    href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Syne:wght@400;600;700;800&display=swap"
+    rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+
+<body>
+
+  <!-- Lightbox -->
+  <div class="lightbox hidden" id="lightbox" onclick="closeLightbox()">
+    <div class="lightbox-close">✕</div>
+    <img id="lightboxImg" src="" alt="">
+  </div>
+
+  <!-- Confirm Dialog -->
+  <div class="confirm-overlay hidden" id="confirmOverlay">
+    <div class="confirm-box">
+      <div class="confirm-msg" id="confirmMsg"></div>
+      <div class="confirm-actions">
+        <button class="btn btn-ghost" onclick="dismissConfirm()">Cancel</button>
+        <button class="btn btn-primary" id="confirmOk">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- QR Overlay -->
+  <div class="qr-overlay hidden" id="qrOverlay">
+    <div class="qr-card" style="position: relative;">
+      <div class="lightbox-close" style="top: 15px; right: 20px; font-size: 20px;" onclick="hideQrOverlay()">✕</div>
+      <div class="qr-title">Connect WhatsApp</div>
+      <div class="qr-subtitle">Scan this QR code with your WhatsApp to link the relay bridge</div>
+      <div class="qr-image-wrap"><img id="qrImage" src="" alt="QR Code"></div>
+      <div class="qr-steps">
+        <div class="qr-step">
+          <div class="step-num">1</div><span>Open WhatsApp on your phone</span>
+        </div>
+        <div class="qr-step">
+          <div class="step-num">2</div><span>Tap Menu → Linked Devices</span>
+        </div>
+        <div class="qr-step">
+          <div class="step-num">3</div><span>Tap "Link a Device" and scan</span>
+        </div>
+      </div>
+      <div class="qr-waiting">
+        <div class="spinner"></div> Waiting for scan...
+      </div>
+    </div>
+  </div>
+
+  <!-- Operator Name Prompt -->
+  <div class="name-prompt-overlay hidden" id="namePrompt">
+    <div class="name-prompt-box">
+      <h3>Set Your Operator Name</h3>
+      <p>This will be visible to other operators in your team</p>
+      <input type="text" id="operatorNameInput" placeholder="e.g. Arjun" maxlength="20"
+        onkeydown="if(event.key==='Enter')saveOperatorName()">
+      <button class="btn btn-primary" style="width:100%" onclick="saveOperatorName()">Join Dashboard</button>
+    </div>
+  </div>
+
+  <!-- Top Bar -->
+  <div class="topbar">
+    <div style="display:flex;align-items:center;gap:16px">
+      <div class="logo">WA<span>/</span>RELAY</div>
+      <div class="status-pill disconnected" id="statusPill">
+        <div class="status-dot"></div>
+        <span id="statusText">Offline</span>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <div class="operator-badge" id="operatorBadge">op://—</div>
+      <button class="btn btn-ghost" onclick="connectBridge()">Connect Bridge</button>
+      <span id="whatsappControlContainer"></span>
+      <button class="btn btn-ghost" onclick="triggerImportContacts()">Import Contacts</button>
+      <button class="btn btn-primary" onclick="switchToCreate()">+ New Group</button>
+    </div>
+  </div>
+
+  <!-- Main -->
+  <div class="main">
+
+    <!-- Sidebar -->
+    <div class="sidebar" style="position: relative;">
+      <div class="sidebar-resizer" id="sidebarResizer"></div>
+      <div class="sidebar-header">
+        <div class="sidebar-title">Conversations</div>
+        <div class="count-badge" id="chatCount">0</div>
+      </div>
+      <div class="search-wrap">
+        <input class="search-input" id="searchInput" placeholder="Search contacts…" oninput="onSearch(this.value)"
+          autocomplete="off">
+      </div>
+      <div class="sidebar-tabs">
+        <button class="tab-btn active" id="tabChats" onclick="switchSidebarTab('chats')">Chats</button>
+        <button class="tab-btn" id="tabGroups" onclick="switchSidebarTab('groups')">Groups</button>
+        <button class="tab-btn" id="tabCommunities" onclick="switchSidebarTab('communities')">Communities</button>
+        <button class="tab-btn" id="tabContacts" onclick="switchSidebarTab('contacts')">Contacts</button>
+        <button class="tab-btn" id="tabChannels" onclick="switchSidebarTab('channels')">Channels</button>
+        <button class="tab-btn" id="tabStatus" onclick="switchSidebarTab('status')">Status</button>
+      </div>
+      <div class="search-results" id="searchResults"></div>
+      <div class="chat-list" id="chatList"></div>
+    </div>
+
+    <!-- Chat Area -->
+    <div class="chat-area" id="chatArea">
+      <div class="empty-state" id="emptyState">
+        <div class="empty-icon">💬</div>
+        <div class="empty-text">Select a conversation<br>to start messaging</div>
+      </div>
+
+      <div id="chatView" style="display:none;flex-direction:column;height:100%;overflow:hidden;">
+        <div class="chat-topbar">
+          <div class="chat-topbar-main">
+            <div class="chat-topbar-info">
+              <div class="chat-topbar-avatar" id="chatTopAvatar">G</div>
+              <div>
+                <div class="chat-topbar-name" id="chatTopName">—</div>
+                <div class="chat-topbar-meta" id="chatTopMeta">—</div>
+              </div>
+            </div>
+            <div class="assignment-wrap">
+              <div class="assignment-pill" id="assignmentPill">Unassigned</div>
+              <div class="assignment-actions">
+                <button class="btn btn-ghost" id="claimChatBtn" onclick="claimActiveChat()">Claim</button>
+                <button class="btn btn-ghost" id="releaseChatBtn" onclick="releaseActiveChat()">Release</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="lock-note" id="lockNote"></div>
+
+        <div class="messages-area" id="messagesArea">
+          <div class="load-more-indicator" id="loadMoreIndicator" style="display:none">
+            <button class="load-more-btn" onclick="loadMoreMessages()">↑ Load older messages</button>
+          </div>
+        </div>
+
+        <!-- Input -->
+        <div class="input-bar">
+          <!-- Editing indicator -->
+          <div class="editing-bar" id="editingBar">
+            <span class="editing-bar-text" id="editingBarText">Editing message…</span>
+            <button onclick="cancelEdit()">✕ Cancel</button>
+          </div>
+
+          <!-- Media preview strip -->
+          <div class="media-preview-strip" id="mediaPreviewStrip">
+            <div class="preview-thumb" id="previewThumb"></div>
+            <div class="preview-caption">
+              <input class="caption-input" id="captionInput" placeholder="Add a caption…">
+            </div>
+            <button class="btn btn-ghost" style="font-size:11px;padding:5px 10px" onclick="clearMedia()">✕
+              Remove</button>
+          </div>
+
+          <div class="input-row">
+            <!-- Attach button -->
+            <div class="attach-wrap">
+              <button class="attach-btn" id="attachBtn" onclick="toggleAttachMenu()" title="Attach media">📎</button>
+              <div class="attach-menu" id="attachMenu">
+                <div class="attach-option" onclick="triggerFileInput('image')">
+                  <div class="attach-option-icon">🖼️</div> Image / GIF
+                </div>
+                <div class="attach-option" onclick="triggerFileInput('video')">
+                  <div class="attach-option-icon">🎥</div> Video
+                </div>
+                <div class="attach-option" onclick="triggerFileInput('audio')">
+                  <div class="attach-option-icon">🎵</div> Audio File
+                </div>
+                <div class="attach-option" onclick="triggerFileInput('document')">
+                  <div class="attach-option-icon">📄</div> Document
+                </div>
+                <div class="attach-option" onclick="showLocationDialog()">
+                  <div class="attach-option-icon">📍</div> Location
+                </div>
+              </div>
+            </div>
+
+            <textarea class="message-input" id="messageInput" placeholder="Type a message… (Enter to send)" rows="1"
+              onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+
+            <button class="send-btn" id="sendBtn" onclick="sendMessage()">
+              <svg viewBox="0 0 24 24">
+                <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Panel -->
+    <div class="right-panel">
+      <div class="panel-tabs">
+        <div class="panel-tab active" onclick="switchTab('operators',this)">Operators</div>
+        <div class="panel-tab" onclick="switchTab('groups',this)">Groups</div>
+        <div class="panel-tab" onclick="switchTab('create',this)" id="createTab">Create</div>
+      </div>
+      <div class="panel-content" id="panelContent"></div>
+      <div class="stats-bar">
+        <div class="stat">
+          <div class="stat-value" id="statOperators">0</div>
+          <div class="stat-label">Operators</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value" id="statMessages">0</div>
+          <div class="stat-label">Messages</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value" id="statGroups">0</div>
+          <div class="stat-label">Groups</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hidden file inputs -->
+  <input type="file" id="fileInputImage" accept="image/*,image/gif" onchange="handleFileSelected('image',this)">
+  <input type="file" id="fileInputVideo" accept="video/*" onchange="handleFileSelected('video',this)">
+  <input type="file" id="fileInputAudio" accept="audio/*" onchange="handleFileSelected('audio',this)">
+  <input type="file" id="fileInputDocument" accept="*/*" onchange="handleFileSelected('document',this)">
+  <input type="file" id="fileInputContacts" accept=".vcf" onchange="handleImportContacts(this)">
+
+  <script src="dashboard.js"></script>
+</body>
+
+</html>
