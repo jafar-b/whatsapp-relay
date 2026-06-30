@@ -1962,7 +1962,7 @@
       if (activeChat.type === 'personal') {
         const cleanId = cleanJid(activeChat.id);
         const cleanPhone = activeChat.phone ? cleanJid(activeChat.phone) : '';
-        const isLidOrJidDisplayName = (topDisplayName === cleanId || /^\+?1\d{14}$/.test(topDisplayName.replace(/\s+/g, '')) || /^\+?\d{10,}$/.test(topDisplayName.replace(/\s+/g, '')));
+        const isLidOrJidDisplayName = (topDisplayName === cleanId || topDisplayName.startsWith('LID: ') || /^\+?1\d{14}$/.test(topDisplayName.replace(/\s+/g, '')) || /^\+?\d{10,}$/.test(topDisplayName.replace(/\s+/g, '')));
         if (isLidOrJidDisplayName && cleanPhone && cleanPhone !== topDisplayName) {
           const originalDisplayName = topDisplayName;
           topDisplayName = cleanPhone;
@@ -2160,7 +2160,7 @@
         } else if (chat.type === 'personal') {
           const cleanId = cleanJid(chat.id);
           const cleanPhone = chat.phone ? cleanJid(chat.phone) : '';
-          const isLidOrJidDisplayName = (displayName === cleanId || /^\+?1\d{14}$/.test(displayName.replace(/\s+/g, '')) || /^\+?\d{10,}$/.test(displayName.replace(/\s+/g, '')));
+          const isLidOrJidDisplayName = (displayName === cleanId || displayName.startsWith('LID: ') || /^\+?1\d{14}$/.test(displayName.replace(/\s+/g, '')) || /^\+?\d{10,}$/.test(displayName.replace(/\s+/g, '')));
           if (isLidOrJidDisplayName && cleanPhone && cleanPhone !== displayName) {
             displayName = cleanPhone;
           }
@@ -2222,7 +2222,7 @@
 
         let cleanName = cleanJid(contact.name);
         const cleanPhone = contact.phone ? cleanJid(contact.phone) : '';
-        const isLidOrJidName = (cleanName === cleanJid(contact.id) || /^\+?1\d{14}$/.test(cleanName.replace(/\s+/g, '')) || /^\+?\d{10,}$/.test(cleanName.replace(/\s+/g, '')));
+        const isLidOrJidName = (cleanName === cleanJid(contact.id) || cleanName.startsWith('LID: ') || /^\+?1\d{14}$/.test(cleanName.replace(/\s+/g, '')) || /^\+?\d{10,}$/.test(cleanName.replace(/\s+/g, '')));
         if (isLidOrJidName && cleanPhone && cleanPhone !== cleanName) {
           cleanName = cleanPhone;
         }
