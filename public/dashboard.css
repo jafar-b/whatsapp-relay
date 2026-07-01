@@ -9,6 +9,7 @@
       --danger: #ef4444;
       --text: #e8e8f0;
       --muted: #6b6b85;
+      --font-whatsapp: 'Segoe UI', 'Helvetica Neue', Helvetica, 'Lucida Grande', Arial, Ubuntu, Cantarell, 'Fira Sans', sans-serif;
     }
 
     * {
@@ -18,7 +19,7 @@
     }
 
     body {
-      font-family: 'Syne', sans-serif;
+      font-family: var(--font-whatsapp);
       background: var(--bg);
       color: var(--text);
       height: 100vh;
@@ -58,7 +59,7 @@
       padding: 4px 12px;
       border-radius: 20px;
       font-size: 11px;
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: var(--font-whatsapp);
       font-weight: 500;
       letter-spacing: 0.5px;
       text-transform: uppercase;
@@ -110,7 +111,7 @@
       border-radius: 6px;
       font-size: 12px;
       font-weight: 600;
-      font-family: 'Syne', sans-serif;
+      font-family: var(--font-whatsapp);
       cursor: pointer;
       border: none;
       transition: all 0.15s;
@@ -138,6 +139,14 @@
       color: var(--accent);
     }
 
+    .bridge-live-btn {
+      max-width: 280px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-family: var(--font-whatsapp);
+    }
+
     .btn-ghost-sm {
       background: transparent;
       color: var(--muted);
@@ -161,7 +170,7 @@
       border-radius: 6px;
       font-size: 12px;
       font-weight: 600;
-      font-family: 'Syne', sans-serif;
+      font-family: var(--font-whatsapp);
       cursor: pointer;
       border: none;
       transition: all 0.15s;
@@ -190,7 +199,7 @@
     .operator-badge {
       font-size: 12px;
       color: var(--muted);
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: var(--font-whatsapp);
     }
 
     /* Layout */
@@ -214,7 +223,7 @@
     .sidebar-resizer {
       position: absolute;
       top: 0;
-      right: 0;
+      left: 0;
       width: 4px;
       height: 100%;
       cursor: ew-resize;
@@ -250,7 +259,7 @@
       border: 1px solid var(--border);
       cursor: pointer;
       transition: all 0.15s;
-      font-family: 'Syne', sans-serif;
+      font-family: var(--font-whatsapp);
     }
 
     .tab-btn:hover {
@@ -294,7 +303,7 @@
 
     .count-badge {
       font-size: 10px;
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: var(--font-whatsapp);
       background: var(--surface2);
       border: 1px solid var(--border);
       color: var(--muted);
@@ -314,7 +323,7 @@
       border-radius: 8px;
       padding: 7px 12px;
       color: var(--text);
-      font-family: 'Syne', sans-serif;
+      font-family: var(--font-whatsapp);
       font-size: 12px;
       outline: none;
       transition: border-color 0.2s;
@@ -364,7 +373,7 @@
     .search-result-phone {
       font-size: 10px;
       color: var(--muted);
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: var(--font-whatsapp);
     }
 
     .chat-list {
@@ -374,12 +383,24 @@
     }
 
     .chat-list::-webkit-scrollbar {
-      width: 3px;
+      width: 4px;
+      transition: width 0.22s ease-in-out;
     }
 
     .chat-list::-webkit-scrollbar-thumb {
       background: var(--border);
-      border-radius: 3px;
+      border-radius: 999px;
+      transition: background 0.22s ease-in-out;
+    }
+
+    @media (hover: hover) and (pointer: fine) {
+      .chat-list:hover::-webkit-scrollbar {
+        width: 10px;
+      }
+
+      .chat-list:hover::-webkit-scrollbar-thumb {
+        background: color-mix(in srgb, var(--border) 70%, var(--accent) 30%);
+      }
     }
 
     .chat-item {
@@ -452,7 +473,7 @@
       padding: 2px 7px;
       border-radius: 999px;
       font-size: 9px;
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: var(--font-whatsapp);
       text-transform: uppercase;
       letter-spacing: 0.6px;
       border: 1px solid var(--border);
@@ -478,7 +499,7 @@
       overflow: hidden;
       text-overflow: ellipsis;
       margin-top: 2px;
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: var(--font-whatsapp);
     }
 
     .unread-dot {
@@ -534,7 +555,7 @@
     .chat-topbar-meta {
       font-size: 11px;
       color: var(--muted);
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: var(--font-whatsapp);
       margin-top: 1px;
     }
 
@@ -587,7 +608,7 @@
       border-bottom: 1px solid rgba(239, 68, 68, 0.25);
       color: #fecaca;
       font-size: 11px;
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: var(--font-whatsapp);
     }
 
     .lock-note.visible {
@@ -675,7 +696,7 @@
       font-weight: 700;
       color: var(--accent);
       margin-bottom: 3px;
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: var(--font-whatsapp);
       letter-spacing: 0.3px;
     }
 
@@ -685,7 +706,7 @@
 
     .msg-time {
       font-size: 9px;
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: var(--font-whatsapp);
       margin-top: 4px;
       opacity: 0.5;
       text-align: right;
@@ -693,7 +714,7 @@
 
     .msg-edited {
       font-size: 9px;
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: var(--font-whatsapp);
       margin-top: 4px;
       opacity: 0.4;
       font-style: italic;
@@ -706,14 +727,25 @@
     }
 
     .msg-actions {
-      display: none;
+      display: flex;
       gap: 4px;
-      margin-top: 6px;
+      margin-top: 0;
       justify-content: flex-end;
+      max-height: 0;
+      opacity: 0;
+      overflow: hidden;
+      pointer-events: none;
+      transform: translateY(-4px);
+      transition: max-height 0.2s ease-in-out, opacity 0.2s ease-in-out,
+        transform 0.2s ease-in-out, margin-top 0.2s ease-in-out;
     }
 
     .message-row.outgoing .msg-bubble:hover .msg-actions {
-      display: flex;
+      max-height: 40px;
+      opacity: 1;
+      margin-top: 6px;
+      pointer-events: auto;
+      transform: translateY(0);
     }
 
     /* Media in bubbles */
@@ -846,7 +878,7 @@
       flex: 1;
       color: #fff;
       font-size: 12px;
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: var(--font-whatsapp);
     }
 
     .editing-bar button {
@@ -926,7 +958,7 @@
       background: transparent;
       border: none;
       outline: none;
-      font-family: 'Syne', sans-serif;
+      font-family: var(--font-whatsapp);
       font-size: 12px;
       color: var(--text);
     }
@@ -949,7 +981,7 @@
       border-radius: 10px;
       padding: 10px 14px;
       color: var(--text);
-      font-family: 'Syne', sans-serif;
+      font-family: var(--font-whatsapp);
       font-size: 13px;
       resize: none;
       min-height: 40px;
@@ -1135,7 +1167,7 @@
     .operator-since {
       font-size: 10px;
       color: var(--muted);
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: var(--font-whatsapp);
       margin-top: 2px;
     }
 
@@ -1161,7 +1193,7 @@
       border-radius: 8px;
       padding: 9px 12px;
       color: var(--text);
-      font-family: 'Syne', sans-serif;
+      font-family: var(--font-whatsapp);
       font-size: 13px;
       outline: none;
       transition: border-color 0.2s;
@@ -1178,7 +1210,7 @@
       border-radius: 8px;
       padding: 9px 12px;
       color: var(--text);
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: var(--font-whatsapp);
       font-size: 11px;
       outline: none;
       transition: border-color 0.2s;
@@ -1194,7 +1226,7 @@
       font-size: 10px;
       color: var(--muted);
       margin-top: 4px;
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: var(--font-whatsapp);
     }
 
     /* Stats */
@@ -1218,7 +1250,7 @@
     .stat-value {
       font-size: 16px;
       font-weight: 800;
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: var(--font-whatsapp);
       color: var(--accent);
     }
 
@@ -1335,7 +1367,7 @@
 
     .qr-waiting {
       font-size: 11px;
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: var(--font-whatsapp);
       color: var(--warn);
       display: flex;
       align-items: center;
@@ -1534,7 +1566,7 @@
       border: 1px solid var(--border);
       border-radius: 8px;
       color: var(--text);
-      font-family: 'Syne', sans-serif;
+      font-family: var(--font-whatsapp);
       font-size: 14px;
       margin-bottom: 16px;
     }
@@ -1555,6 +1587,10 @@
     .mobile-back-btn,
     .panel-mobile-header,
     .mobile-menu-toggle {
+      display: none;
+    }
+
+    .mobile-only-btn {
       display: none;
     }
 
@@ -1589,6 +1625,10 @@
         transition: all 0.15s;
         width: 32px;
         height: 32px;
+      }
+
+      .mobile-only-btn {
+        display: inline-flex;
       }
 
       .mobile-menu-toggle:hover {
@@ -1848,6 +1888,10 @@
 
       /* On mobile touch devices, allow display of bubble actions when active */
       .msg-bubble.show-actions .msg-actions {
-        display: flex !important;
+        max-height: 40px !important;
+        opacity: 1 !important;
+        margin-top: 6px !important;
+        pointer-events: auto !important;
+        transform: translateY(0) !important;
       }
     }

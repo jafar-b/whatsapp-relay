@@ -33,6 +33,8 @@ let linkingOperator = null;
 
 let saveTimer = null;
 const pendingResolutions = new Set();
+const DEFAULT_EDIT_WINDOW_SECONDS = 15 * 60;
+const DEFAULT_DELETE_FOR_EVERYONE_WINDOW_SECONDS = 60 * 60 * 60;
 
 function init({ rootDir, config }) {
   ROOT_DIR = rootDir;
@@ -516,6 +518,154 @@ function getMessagesForJid(jid) {
   return msgs;
 }
 
+function toUnixSeconds(ts) {
+  const normalized = toTimestamp(ts);
+  if (!normalized) return 0;
+  // Defensive normalization: some producers may emit milliseconds.
+  if (normalized > 100000000000) return Math.floor(normalized / 1000);
+  return normalized;
+}
+
+function getThreadJids(jid) {
+  if (!jid) return [];
+  const preferred = getPreferredJid(jid) || jid;
+  const altJid = preferred.endsWith('@lid') ? lidToJid[preferred] : jidToLid[preferred];
+  return altJid ? [preferred, altJid] : [preferred];
+}
+
+function findMessageInThread(jid, messageId) {
+  if (!jid || !messageId) return null;
+  const threadJids = getThreadJids(jid);
+  for (const threadJid of threadJids) {
+    const msgs = messageStore[threadJid];
+    if (!msgs) continue;
+    const found = msgs.find((msg) => msg.id === messageId);
+    if (found) return found;
+  }
+  return null;
+}
+
+function canEditMessage(jid, messageId, options = {}) {
+  const msg = findMessageInThread(jid, messageId);
+  const windowSeconds = Number(options.windowSeconds) || DEFAULT_EDIT_WINDOW_SECONDS;
+  const nowSeconds = toUnixSeconds(options.nowSeconds || Math.floor(Date.now() / 1000));
+
+  if (!msg) {
+    return {
+      ok: false,
+      status: 404,
+      code: 'MESSAGE_NOT_FOUND',
+      message: 'Message not found',
+      windowSeconds,
+      remainingSeconds: 0,
+    };
+  }
+
+  if (!msg.fromMe) {
+    return {
+      ok: false,
+      status: 403,
+      code: 'ONLY_SENT_MESSAGES_EDITABLE',
+      message: 'Only your sent messages can be edited',
+      windowSeconds,
+      remainingSeconds: 0,
+    };
+  }
+
+  if (msg.deleted) {
+    return {
+      ok: false,
+      status: 409,
+      code: 'MESSAGE_ALREADY_DELETED',
+      message: 'Cannot edit a deleted message',
+      windowSeconds,
+      remainingSeconds: 0,
+    };
+  }
+
+  if ((msg.mediaType || 'text') !== 'text') {
+    return {
+      ok: false,
+      status: 400,
+      code: 'ONLY_TEXT_MESSAGES_EDITABLE',
+      message: 'Only text messages can be edited',
+      windowSeconds,
+      remainingSeconds: 0,
+    };
+  }
+
+  const msgSeconds = toUnixSeconds(msg.timestamp);
+  const ageSeconds = Math.max(0, nowSeconds - msgSeconds);
+  const remainingSeconds = Math.max(0, windowSeconds - ageSeconds);
+  if (!msgSeconds || ageSeconds > windowSeconds) {
+    return {
+      ok: false,
+      status: 410,
+      code: 'EDIT_WINDOW_EXPIRED',
+      message: 'Edit window expired (15 minutes)',
+      windowSeconds,
+      remainingSeconds,
+    };
+  }
+
+  return { ok: true, message: msg, windowSeconds, remainingSeconds };
+}
+
+function canDeleteForEveryone(jid, messageId, options = {}) {
+  const msg = findMessageInThread(jid, messageId);
+  const windowSeconds = Number(options.windowSeconds) || DEFAULT_DELETE_FOR_EVERYONE_WINDOW_SECONDS;
+  const nowSeconds = toUnixSeconds(options.nowSeconds || Math.floor(Date.now() / 1000));
+
+  if (!msg) {
+    return {
+      ok: false,
+      status: 404,
+      code: 'MESSAGE_NOT_FOUND',
+      message: 'Message not found',
+      windowSeconds,
+      remainingSeconds: 0,
+    };
+  }
+
+  if (!msg.fromMe) {
+    return {
+      ok: false,
+      status: 403,
+      code: 'ONLY_SENT_MESSAGES_DELETABLE',
+      message: 'Only your sent messages can be deleted for everyone',
+      windowSeconds,
+      remainingSeconds: 0,
+    };
+  }
+
+  if (msg.deleted) {
+    return {
+      ok: false,
+      status: 409,
+      code: 'MESSAGE_ALREADY_DELETED',
+      message: 'Message is already deleted',
+      windowSeconds,
+      remainingSeconds: 0,
+    };
+  }
+
+  const msgSeconds = toUnixSeconds(msg.timestamp);
+  const ageSeconds = Math.max(0, nowSeconds - msgSeconds);
+  const remainingSeconds = Math.max(0, windowSeconds - ageSeconds);
+  if (!msgSeconds || ageSeconds > windowSeconds) {
+    return {
+      ok: false,
+      status: 410,
+      code: 'DELETE_WINDOW_EXPIRED',
+      message: 'Delete for everyone window expired (60 hours)',
+      windowSeconds,
+      remainingSeconds,
+    };
+  }
+
+  return { ok: true, message: msg, windowSeconds, remainingSeconds };
+}
+
 function backfillContactNames() {
   let updated = false;
   for (const [jid, chat] of Object.entries(chatStore)) {
@@ -778,6 +928,8 @@ module.exports = {
   toTimestamp,
   resolveLidToPhoneAsync,
   resolveAllLidsFromStore,
+  canEditMessage,
+  canDeleteForEveryone,
   normalizeChat,
   normalizeMessageRecord,
   unwrapMessage,

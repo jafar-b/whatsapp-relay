@@ -6,6 +6,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const multer = require('multer');
 const mime = require('mime-types');
 
@@ -52,10 +53,88 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
   }
 
   const notConnected = (res) => res.status(503).json({ error: 'Not connected to WhatsApp' });
+  const EDIT_WINDOW_SECONDS = Number(CONFIG.MESSAGE_EDIT_WINDOW_SECONDS) || (15 * 60);
+  const DELETE_FOR_EVERYONE_WINDOW_SECONDS = Number(CONFIG.MESSAGE_DELETE_FOR_EVERYONE_WINDOW_SECONDS) || (60 * 60 * 60);
+
+  function serializeActionError(result) {
+    return {
+      error: result.message,
+      code: result.code,
+      windowSeconds: result.windowSeconds,
+      remainingSeconds: result.remainingSeconds,
+    };
+  }
+
+  function getFirstLanIpv4() {
+    const nets = os.networkInterfaces();
+    for (const iface of Object.values(nets)) {
+      if (!iface) continue;
+      for (const addr of iface) {
+        if (!addr || addr.family !== 'IPv4' || addr.internal) continue;
+        if (addr.address.startsWith('169.254.')) continue;
+        return addr.address;
+      }
+    }
+    return null;
+  }
+
+  function getBridgeLiveAddress(req) {
+    const forwardedHost = (req.headers['x-forwarded-host'] || '').toString().split(',')[0].trim();
+    const hostHeader = forwardedHost || req.get('host') || '';
+
+    let host = hostHeader;
+    let port = '';
+    if (host.startsWith('[')) {
+      const idx = host.indexOf(']');
+      if (idx > -1) {
+        const rest = host.slice(idx + 1);
+        if (rest.startsWith(':')) port = rest.slice(1);
+        host = host.slice(1, idx);
+      }
+    } else {
+      const parts = host.split(':');
+      host = parts[0] || '';
+      port = parts[1] || '';
+    }
+
+    const loopbackHosts = new Set(['localhost', '127.0.0.1', '::1', '0.0.0.0']);
+    if (loopbackHosts.has(host)) {
+      host = getFirstLanIpv4() || host;
+    }
+
+    const resolvedPort = port || String(process.env.PORT || 3001);
+    return `${host}${resolvedPort ? `:${resolvedPort}` : ''}`;
+  }
+
+  function getBridgeLiveUrl(req) {
+    const forwardedProto = (req.headers['x-forwarded-proto'] || '').toString().split(',')[0].trim();
+    const protocol = forwardedProto || req.protocol || 'http';
+    return `${protocol}://${getBridgeLiveAddress(req)}`;
+  }
 
   app.get('/api/status', (req, res) => {
     const { id: connectorOperatorId, name: connectorOperatorName } = stores.getConnectorOperator();
-    res.json({ status: whatsapp.getStatus(), qr: whatsapp.getQrCodeData(), connectorOperatorId, connectorOperatorName });
+    const bridgeLiveAddress = getBridgeLiveAddress(req);
+    res.json({
+      status: whatsapp.getStatus(),
+      qr: whatsapp.getQrCodeData(),
+      connectorOperatorId,
+      connectorOperatorName,
+      bridgeLiveAddress,
+      bridgeLiveUrl: getBridgeLiveUrl(req),
+      messageRules: {
+        editWindowSeconds: EDIT_WINDOW_SECONDS,
+        deleteForEveryoneWindowSeconds: DELETE_FOR_EVERYONE_WINDOW_SECONDS,
+      },
+    });
+  });
+
+  app.get('/api/bridge/live', (req, res) => {
+    const bridgeLiveAddress = getBridgeLiveAddress(req);
+    res.json({
+      bridgeLiveAddress,
+      bridgeLiveUrl: getBridgeLiveUrl(req),
+    });
   });
 
   app.post('/api/whatsapp/disconnect', async (req, res) => {
@@ -451,6 +530,10 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
     if (!jid || !newContent) return res.status(400).json({ error: 'jid and newContent required' });
     const lock = stores.ensureChatLockForOperator(jid, operator);
     if (!lock.ok) return res.status(lock.status).json({ error: lock.message, chat: lock.chat });
+
+    const eligibility = stores.canEditMessage(jid, messageId, { windowSeconds: EDIT_WINDOW_SECONDS });
+    if (!eligibility.ok) return res.status(eligibility.status).json(serializeActionError(eligibility));
+
     try {
       await sock.sendMessage(jid, { edit: { id: messageId, remoteJid: jid, fromMe: true }, text: newContent });
       const msgs = stores.messageStore[jid];
@@ -479,6 +562,10 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
     if (!jid) return res.status(400).json({ error: 'jid required' });
     const lock = stores.ensureChatLockForOperator(jid, operator);
     if (!lock.ok) return res.status(lock.status).json({ error: lock.message, chat: lock.chat });
+
+    const eligibility = stores.canDeleteForEveryone(jid, messageId, { windowSeconds: DELETE_FOR_EVERYONE_WINDOW_SECONDS });
+    if (!eligibility.ok) return res.status(eligibility.status).json(serializeActionError(eligibility));
+
     try {
       await sock.sendMessage(jid, { delete: { id: messageId, remoteJid: jid, fromMe: true } });
       const msgs = stores.messageStore[jid];
@@ -640,6 +727,18 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       const operator = getOperatorFromSocket(socket);
       const lock = stores.ensureChatLockForOperator(jid, operator);
       if (!lock.ok) return stores.sendLockError(socket, lock);
+
+      const eligibility = stores.canEditMessage(jid, messageId, { windowSeconds: EDIT_WINDOW_SECONDS });
+      if (!eligibility.ok) {
+        return socket.emit('error', {
+          message: eligibility.message,
+          jid,
+          code: eligibility.code,
+          windowSeconds: eligibility.windowSeconds,
+          remainingSeconds: eligibility.remainingSeconds,
+        });
+      }
+
       try {
         await sock.sendMessage(jid, { edit: { id: messageId, remoteJid: jid, fromMe: true }, text: newContent });
         const altJid = jid.endsWith('@lid') ? stores.lidToJid[jid] : stores.jidToLid[jid];
@@ -668,6 +767,20 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       const operator = getOperatorFromSocket(socket);
       const lock = stores.ensureChatLockForOperator(jid, operator);
       if (!lock.ok) return stores.sendLockError(socket, lock);
+
+      const eligibility = stores.canDeleteForEveryone(jid, messageId, {
+        windowSeconds: DELETE_FOR_EVERYONE_WINDOW_SECONDS,
+      });
+      if (!eligibility.ok) {
+        return socket.emit('error', {
+          message: eligibility.message,
+          jid,
+          code: eligibility.code,
+          windowSeconds: eligibility.windowSeconds,
+          remainingSeconds: eligibility.remainingSeconds,
+        });
+      }
+
       try {
         await sock.sendMessage(jid, { delete: { id: messageId, remoteJid: jid, fromMe: true } });
         const altJid = jid.endsWith('@lid') ? stores.lidToJid[jid] : stores.jidToLid[jid];

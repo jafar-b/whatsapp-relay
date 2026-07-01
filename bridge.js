@@ -56,6 +56,8 @@ const CONFIG = {
   SAVE_DEBOUNCE_MS: 2000,
   DB_PATH: './relay.sqlite',
   RELEASE_ASSIGNMENTS_ON_DISCONNECT: true,
+  MESSAGE_EDIT_WINDOW_SECONDS: 15 * 60,
+  MESSAGE_DELETE_FOR_EVERYONE_WINDOW_SECONDS: 60 * 60 * 60,
 };
 try {
   const configFile = path.join(ROOT_DIR, 'config.json');

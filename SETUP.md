@@ -70,6 +70,8 @@ The server runs on **http://localhost:3001**
 - **Edit**: hover over a sent text message → click ✎ Edit → modify text → press Enter
 - **Delete**: hover over a sent message → click 🗑 Delete → confirm
 - Changes sync to all connected operators and are sent to WhatsApp
+- **Edit window**: available for 15 minutes after sending
+- **Delete for everyone window**: available for 60 hours after sending
 
 ## Contact Name Resolution
 WhatsApp's linked device protocol only provides WhatsApp display names, not phone address book names. To get full name resolution:
@@ -140,6 +142,8 @@ Baileys returns timestamps as protobuf `{low, high, unsigned}` objects.
 | `SAVE_DEBOUNCE_MS` | 2000 | Debounce interval before syncing contacts/chats to SQLite |
 | `DB_PATH` | `./relay.sqlite` | SQLite database file path |
 | `RELEASE_ASSIGNMENTS_ON_DISCONNECT` | `true` | Release claimed customer conversations when an operator disconnects |
+| `MESSAGE_EDIT_WINDOW_SECONDS` | `900` | Edit window after send (WhatsApp default: 15 minutes) |
+| `MESSAGE_DELETE_FOR_EVERYONE_WINDOW_SECONDS` | `216000` | Delete for everyone window after send (WhatsApp default: 60 hours) |
 
 ## Known Limitations
 - No message history older than what WhatsApp syncs (~3 months)

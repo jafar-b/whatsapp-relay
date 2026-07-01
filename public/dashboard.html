@@ -5,9 +5,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>WA Relay — Operator Dashboard</title>
-  <link
-    href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Syne:wght@400;600;700;800&display=swap"
-    rel="stylesheet">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
   <link rel="stylesheet" href="dashboard.css">
 </head>
@@ -76,8 +73,7 @@
       </div>
     </div>
     <div class="topbar-right">
-      <div class="operator-badge" id="operatorBadge">op://—</div>
-      <button class="btn btn-ghost" onclick="connectBridge()">Connect Bridge</button>
+      <span id="bridgeActionContainer"></span>
       <span id="whatsappControlContainer"></span>
       <button class="btn btn-ghost" onclick="triggerImportContacts()">Import Contacts</button>
       <button class="btn btn-ghost mobile-only-btn" onclick="switchTab('operators', document.querySelector('.panel-tab'))">Dashboard Info</button>
@@ -222,8 +218,7 @@
       </div>
       <div class="panel-tabs">
         <div class="panel-tab active" onclick="switchTab('operators',this)">Operators</div>
-        <div class="panel-tab" onclick="switchTab('groups',this)">Groups</div>
-        <div class="panel-tab" onclick="switchTab('create',this)" id="createTab">Create</div>
+        <div class="panel-tab" onclick="switchTab('create',this)" id="createTab">Create Group</div>
       </div>
       <div class="panel-content" id="panelContent"></div>
       <div class="stats-bar">

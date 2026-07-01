@@ -119,6 +119,62 @@ function init(deps) {
   ({ stores, database, io, ROOT_DIR, MEDIA_DIR } = deps);
 }
 
+function getThreadJids(jid) {
+  if (!jid) return [];
+  const preferred = stores.getPreferredJid(jid) || jid;
+  const alt = preferred.endsWith('@lid') ? stores.lidToJid[preferred] : stores.jidToLid[preferred];
+  return alt ? [preferred, alt] : [preferred];
+}
+
+function markMessageDeletedInStore(jid, messageId, options = {}) {
+  if (!jid || !messageId) return false;
+  const emitEvent = options.emitEvent !== false;
+  const targetJids = getThreadJids(jid);
+  let found = false;
+
+  for (const threadJid of targetJids) {
+    const thread = stores.messageStore[threadJid];
+    if (!thread) continue;
+    const msg = thread.find((item) => item.id === messageId);
+    if (!msg) continue;
+    msg.deleted = true;
+    msg.content = '';
+    msg.mediaUrl = null;
+    database.upsertMessage(msg);
+    found = true;
+
+    const chat = stores.chatStore[threadJid];
+    if (chat) {
+      const messages = stores.getMessagesForJid(threadJid);
+      const last = messages[messages.length - 1];
+      chat.lastMsg = last?.deleted ? 'This message was deleted' : (last?.content || '');
+      if (last?.timestamp) chat.timestamp = last.timestamp;
+      database.upsertChat(chat);
+    }
+  }
+
+  if (found) {
+    if (emitEvent) io.emit('message_deleted', { jid: targetJids[0], messageId });
+    stores.broadcastChats();
+    stores.saveStore();
+  }
+
+  return found;
+}
+
+function handleProtocolMessage(rawMsg, unwrappedMsg, options = {}) {
+  const protocol = unwrappedMsg?.protocolMessage;
+  // WhatsApp "Delete for everyone" arrives as protocolMessage(type=0)
+  // referencing the target message key rather than a normal content message.
+  if (!protocol || protocol.type !== 0) return false;
+
+  const targetId = protocol.key?.id;
+  const targetJid = stores.getPreferredJid(protocol.key?.remoteJid || rawMsg?.key?.remoteJid);
+  if (!targetId || !targetJid) return true;
+  markMessageDeletedInStore(targetJid, targetId, options);
+  return true;
+}
+
 function setSock(newSock) {
   sock = newSock;
   stores.setSock(newSock);
@@ -301,6 +357,10 @@ async function connectToWhatsApp() {
       if (type !== 'notify' && !isHistory) return;
       for (const msg of messages) {
         if (!msg.message) continue;
+
+        const unwrapped = stores.unwrapMessage(msg.message);
+        if (handleProtocolMessage(msg, unwrapped)) continue;
+
         const parsedRaw = await parseMessage(msg, isHistory);
         if (!parsedRaw) continue;
 
@@ -361,6 +421,18 @@ async function connectToWhatsApp() {
         }
         stores.broadcastChats();
         stores.saveStore();
+      }
+    });
+
+    sock.ev.on('messages.update', (updates = []) => {
+      for (const item of updates) {
+        const key = item?.key;
+        const update = item?.update || {};
+        const rawMessage = update.message || item?.message;
+        if (!key?.remoteJid || !rawMessage) continue;
+
+        const unwrapped = stores.unwrapMessage(rawMessage);
+        handleProtocolMessage({ key, message: rawMessage }, unwrapped);
       }
     });
 
@@ -444,6 +516,11 @@ async function connectToWhatsApp() {
           const jid = stores.getPreferredJid(rawJid);
           let m = stores.unwrapMessage(rawMsg.message);
           if (!m) continue;
+
+          if (handleProtocolMessage(rawMsg, m, { emitEvent: false })) {
+            touchedJids.add(jid);
+            continue;
+          }
 
           // History messages can also carry verified business name certs;
           // capture them the same way the live messages.upsert handler does,

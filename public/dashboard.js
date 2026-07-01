@@ -17,6 +17,8 @@
     let chatMessageCounts = {};    // jid -> total message count
     let chatHasMore = {};          // jid -> boolean
     let sentTempIds = new Set();   // track locally-sent message IDs to avoid dupes
+    const EDIT_WINDOW_SECONDS = 15 * 60;
+    const DELETE_FOR_EVERYONE_WINDOW_SECONDS = 60 * 60 * 60;
 
     function currentOperator() {
       return { id: operatorId, name: operatorName || operatorId || 'Unknown' };
@@ -117,6 +119,40 @@
       if (!d) return '';
       const dt = d instanceof Date ? d : new Date(d);
       return dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function unixSeconds(ts) {
+      const n = Number(ts) || 0;
+      if (!n) return 0;
+      return n > 100000000000 ? Math.floor(n / 1000) : n;
+    }
+
+    function canEditMessage(msg) {
+      if (!msg || !msg.fromMe || msg.deleted) return false;
+      if ((msg.mediaType || 'text') !== 'text') return false;
+      const ts = unixSeconds(msg.timestamp);
+      if (!ts) return false;
+      return (Math.floor(Date.now() / 1000) - ts) <= EDIT_WINDOW_SECONDS;
+    }
+
+    function canDeleteForEveryone(msg) {
+      if (!msg || !msg.fromMe || msg.deleted) return false;
+      const ts = unixSeconds(msg.timestamp);
+      if (!ts) return false;
+      return (Math.floor(Date.now() / 1000) - ts) <= DELETE_FOR_EVERYONE_WINDOW_SECONDS;
+    }
+
+    function getRenderedMessage(messageId) {
+      const row = document.getElementById('msg-' + messageId);
+      if (!row) return null;
+      return {
+        id: messageId,
+        fromMe: row.dataset.fromMe === '1',
+        mediaType: row.dataset.mediaType || 'text',
+        deleted: row.dataset.deleted === '1',
+        timestamp: unixSeconds(row.dataset.timestamp),
+        content: row.dataset.content || '',
+      };
     }
 
     function formatDate(ts) {
@@ -271,7 +307,6 @@
       operatorName = name || operatorId;
       localStorage.setItem('whatsapp_relay_operator_name', operatorName);
       document.getElementById('namePrompt').classList.add('hidden');
-      document.getElementById('operatorBadge').textContent = 'op://' + operatorName.toLowerCase().replace(/\s+/g, '-');
       if (socket?.connected) {
         socket.emit('set_operator_name', { name: operatorName });
       }
@@ -734,6 +769,10 @@
       row.id = 'msg-' + msg.id;
       row.className = 'message-row ' + (outgoing ? 'outgoing' : 'incoming');
       row.dataset.timestamp = msg.timestamp || '';
+      row.dataset.fromMe = outgoing ? '1' : '0';
+      row.dataset.mediaType = msg.mediaType || 'text';
+      row.dataset.deleted = msg.deleted ? '1' : '0';
+      row.dataset.content = msg.content || '';
       let resolvedSender = cleanJid(msg.sender);
       const senderName = outgoing
         ? (msg.operatorName || resolvedSender || 'Unknown')
@@ -750,6 +789,8 @@
       const isGroup = activeChat?.type === 'group' || activeChat?.type === 'community';
       const editedMark = msg.editedAt ? '<div class="msg-edited">(edited)</div>' : '';
       const showSender = (!outgoing && isGroup) || (outgoing && Boolean(msg.operatorName));
+      const allowEdit = canEditMessage(msg);
+      const allowDelete = canDeleteForEveryone(msg);
 
       let contentHtml;
       if (msg.deleted) {
@@ -764,10 +805,10 @@
       ${showSender ? `<div class="msg-sender">${senderName}</div>` : ''}
       ${contentHtml}
       ${msg.deleted ? '' : `<div class="msg-time">${timeStr}${editedMark}</div>`}
-      ${outgoing && !msg.deleted ? `
+      ${outgoing && !msg.deleted && (allowEdit || allowDelete) ? `
         <div class="msg-actions">
-          ${msg.mediaType === 'text' ? `<button class="btn-ghost-sm" onclick="startEdit('${msg.id}','${(msg.content || '').replace(/'/g, "\\'").replace(/"/g, '"')}')">✎ Edit</button>` : ''}
-          <button class="btn-ghost-sm" style="color:var(--danger)" onclick="startDelete('${msg.id}')">🗑 Delete</button>
+          ${allowEdit ? `<button class="btn-ghost-sm" onclick="startEdit('${msg.id}')">✎ Edit</button>` : ''}
+          ${allowDelete ? `<button class="btn-ghost-sm" style="color:var(--danger)" onclick="startDelete('${msg.id}')">🗑 Delete</button>` : ''}
         </div>` : ''}
     </div>
   `;
@@ -783,6 +824,7 @@
     function updateMessageInPlace(messageId, newContent, editedAt) {
       const row = document.getElementById('msg-' + messageId);
       if (!row) return;
+      row.dataset.content = newContent || '';
       const bubble = row.querySelector('.msg-bubble');
       if (!bubble) return;
       // Update content
@@ -802,6 +844,8 @@
     function markMessageDeleted(messageId) {
       const row = document.getElementById('msg-' + messageId);
       if (!row) return;
+      row.dataset.deleted = '1';
+      row.dataset.content = '';
       const bubble = row.querySelector('.msg-bubble');
       if (!bubble) return;
       bubble.innerHTML = '<div class="msg-deleted">This message was deleted</div>';
@@ -903,11 +947,17 @@
     }
 
     // ─── Message Actions (Edit / Delete) ──────────────────────────────────────────
-    function startEdit(messageId, currentContent) {
+    function startEdit(messageId) {
       if (!activeChat) return;
+      const msg = getRenderedMessage(messageId);
+      if (!canEditMessage(msg)) {
+        showToast('Edit window expired (15 minutes)', 'error');
+        return;
+      }
       editingMessageId = messageId;
       editingMessageJid = activeChat.id;
       document.getElementById('editingBar').classList.add('visible');
+      const currentContent = msg.content || '';
       document.getElementById('editingBarText').textContent = 'Editing: ' + (currentContent.length > 40 ? currentContent.substring(0, 40) + '…' : currentContent);
       document.getElementById('messageInput').value = currentContent;
       document.getElementById('messageInput').focus();
@@ -924,6 +974,11 @@
     }
 
     function startDelete(messageId) {
+      const msg = getRenderedMessage(messageId);
+      if (!canDeleteForEveryone(msg)) {
+        showToast('Delete for everyone window expired (60 hours)', 'error');
+        return;
+      }
       showConfirm('Delete this message for everyone?', () => {
         deleteMessage(messageId);
       });
@@ -931,6 +986,11 @@
 
     function deleteMessage(messageId) {
       if (!socket?.connected || !activeChat) return;
+      const msg = getRenderedMessage(messageId);
+      if (!canDeleteForEveryone(msg)) {
+        showToast('Delete for everyone window expired (60 hours)', 'error');
+        return;
+      }
       socket.emit('delete_message', { jid: activeChat.id, messageId });
     }
 
@@ -989,6 +1049,13 @@
       if (!socket?.connected || !editingMessageId || !editingMessageJid) return;
       const text = document.getElementById('messageInput').value.trim();
       if (!text) return;
+
+      const msg = getRenderedMessage(editingMessageId);
+      if (!canEditMessage(msg)) {
+        showToast('Edit window expired (15 minutes)', 'error');
+        cancelEdit();
+        return;
+      }
 
       socket.emit('edit_message', {
         jid: editingMessageJid,
@@ -1176,28 +1243,8 @@
             <div class="operator-since">Since ${formatDate(op.connectedAt)}</div>
           </div>
           ${op.id === operatorId ? '<span style="font-size:10px;color:var(--accent);font-family:monospace">YOU</span>' : ''}
-        </div>`).join('')}
-      <div style="margin-top:16px;padding:12px;background:var(--surface2);border-radius:8px;border:1px solid var(--border)">
-        <div class="form-label">Media Support</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px">
-          ${['🖼️ Images', '🎥 Videos', '🎵 Audio', '📄 Documents', '📍 Location', '🪄 Stickers'].map(m => `
-            <div style="font-size:11px;color:var(--muted);padding:4px 8px;background:var(--bg);border-radius:6px">${m}</div>`).join('')}
-        </div>
-      </div>`;
+        </div>`).join('')}`;
         document.getElementById('statOperators').textContent = liveOperators.length;
-      }
-
-      else if (currentTab === 'groups') {
-        c.innerHTML = `
-      <div style="margin-bottom:12px"><div class="form-label">Groups (${liveGroups.length})</div></div>
-      ${liveGroups.length ? liveGroups.map(g => `
-        <div class="operator-item" style="cursor:pointer" onclick='openChatFromPanel(${JSON.stringify(g)})'>
-          <div class="chat-avatar group" style="width:32px;height:32px;font-size:12px">${(g.name || g.subject || '?')[0]}</div>
-          <div style="flex:1">
-            <div class="operator-name">${g.name || g.subject || g.id}</div>
-            <div class="operator-since">${g.participants?.length || 0} participants</div>
-          </div>
-        </div>`).join('') : '<div style="color:var(--muted);font-size:13px">No groups loaded</div>'}`;
       }
 
       else if (currentTab === 'create') {
@@ -1212,21 +1259,7 @@
         <textarea class="form-textarea" id="newGroupParticipants" placeholder="919876543210&#10;918765432109"></textarea>
         <div class="form-hint">One phone number per line (with country code, no +)</div>
       </div>
-      <button class="btn btn-primary" style="width:100%;margin-bottom:12px" onclick="createGroup()">Create Group</button>
-      <div style="padding:12px;background:var(--surface2);border-radius:8px;border:1px solid var(--border)">
-        <div class="form-label">Media API Endpoints</div>
-        <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted);line-height:2">
-          POST /api/send<br>
-          POST /api/send/image<br>
-          POST /api/send/video<br>
-          POST /api/send/audio<br>
-          POST /api/send/document<br>
-          POST /api/send/location<br>
-          POST /api/groups/create<br>
-          PUT /api/messages/:id<br>
-          DELETE /api/messages/:id
-        </div>
-      </div>`;
+      <button class="btn btn-primary" style="width:100%" onclick="createGroup()">Create Group</button>`;
       }
     }
 
@@ -1269,10 +1302,96 @@
     // ─── Bridge Connection ────────────────────────────────────────────────────────
     let connectionStatus = 'disconnected';
     let latestQrData = null;
+    let liveBridgeAddress = '';
+
+    function isLoopbackHost(hostname) {
+      return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '0.0.0.0';
+    }
+
+    function getFallbackBridgeAddress() {
+      try {
+        const parsed = new URL(bridgeUrl);
+        if (!isLoopbackHost(parsed.hostname)) {
+          return parsed.host;
+        }
+      } catch { }
+
+      const winHost = window.location.host || '';
+      if (winHost) {
+        const winHostname = window.location.hostname || '';
+        if (!isLoopbackHost(winHostname)) {
+          return winHost;
+        }
+      }
+      return '';
+    }
+
+    async function refreshBridgeLiveAddress() {
+      try {
+        const res = await fetch(`${bridgeUrl}/api/bridge/live`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const nextAddress = String(data.bridgeLiveAddress || '').trim();
+        if (nextAddress && nextAddress !== liveBridgeAddress) {
+          liveBridgeAddress = nextAddress;
+          updateTopbarButtons();
+        }
+      } catch (err) {
+        console.error('Failed to fetch bridge live address:', err);
+      }
+    }
+
+    async function copyBridgeAddress() {
+      const address = liveBridgeAddress || getFallbackBridgeAddress();
+      if (!address) {
+        showToast('Bridge IP is not available yet.', 'error');
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(address);
+        showToast(`Copied: ${address}`);
+      } catch {
+        const ta = document.createElement('textarea');
+        ta.value = address;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+        showToast(`Copied: ${address}`);
+      }
+    }
+
+    function updateBridgeActionButton() {
+      const container = document.getElementById('bridgeActionContainer');
+      if (!container) return;
+
+      if (!socket || !socket.connected) {
+        container.innerHTML = `<button class="btn btn-ghost" onclick="connectBridge()">Connect Bridge</button>`;
+        return;
+      }
+
+      if (connectionStatus === 'connected') {
+        container.innerHTML = '';
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-ghost bridge-live-btn';
+        btn.onclick = copyBridgeAddress;
+        btn.title = 'Click to copy bridge address';
+        const displayAddress = liveBridgeAddress || getFallbackBridgeAddress() || 'detecting...';
+        btn.textContent = `Bridge Live: ${displayAddress}`;
+        container.appendChild(btn);
+      } else {
+        container.innerHTML = `<button class="btn btn-ghost" onclick="connectBridge()">Connect Bridge</button>`;
+      }
+    }
 
     function updateTopbarButtons() {
       const container = document.getElementById('whatsappControlContainer');
       if (!container) return;
+
+      updateBridgeActionButton();
 
       if (!socket || !socket.connected) {
         container.innerHTML = '';
@@ -1342,6 +1461,7 @@
           if (data.status === 'connected') {
             isNewBridgeWaConnected = true;
           }
+          liveBridgeAddress = String(data.bridgeLiveAddress || '').trim();
         }
       } catch (err) {
         console.error('Error querying status of new bridge:', err);
@@ -1370,6 +1490,7 @@
 
     function connectBridgeDirect(normalized) {
       bridgeUrl = normalized;
+      liveBridgeAddress = '';
 
       if (socket) { socket.disconnect(); }
 
@@ -1390,10 +1511,10 @@
       socket.on('connect', () => {
         updateStatus('connecting', 'Bridge Connected');
         showToast('Bridge server connected!');
+        refreshBridgeLiveAddress();
         if (!operatorName) {
           promptOperatorName();
         } else {
-          document.getElementById('operatorBadge').textContent = 'op://' + operatorName.toLowerCase().replace(/\s+/g, '-');
           socket.emit('set_operator_name', { name: operatorName });
         }
         updateTopbarButtons();
@@ -1402,16 +1523,17 @@
       socket.on('operator_id', ({ id }) => {
         operatorId = id;
         localStorage.setItem('whatsapp_relay_operator_id', id);
-        if (!operatorName) {
-          document.getElementById('operatorBadge').textContent = 'op://' + id.toLowerCase();
-        }
       });
 
       socket.on('status', ({ status, connectorOperatorId: connId, connectorOperatorName: connName }) => {
         connectionStatus = status;
         if (connId !== undefined) connectorOperatorId = connId;
         if (connName !== undefined) connectorOperatorName = connName;
-        if (status === 'connected') { updateStatus('connected', 'WhatsApp Live'); document.getElementById('qrOverlay').classList.add('hidden'); }
+        if (status === 'connected') {
+          updateStatus('connected', 'WhatsApp Live');
+          document.getElementById('qrOverlay').classList.add('hidden');
+          refreshBridgeLiveAddress();
+        }
         else if (status === 'connecting' || status === 'qr_ready') updateStatus('connecting', 'Connecting...');
         else updateStatus('disconnected', 'WA Disconnected');
         updateTopbarButtons();
@@ -1434,7 +1556,6 @@
           upsertChatRecord({ id: g.id, name: g.subject, type: 'group', lastMsg: '', participants: g.participants?.length || 0, unread: 0, timestamp: 0 });
         }
         renderChatList(allChats);
-        if (currentTab === 'groups') renderPanel();
       });
 
       socket.on('chats', chats => {
@@ -1505,13 +1626,11 @@
 
       socket.on('group_created', (result) => {
         showToast(`Group "${result.subject}" created!`);
-        if (currentTab === 'groups') renderPanel();
       });
 
       socket.on('group_update', (update) => {
         const existing = liveGroups.find(g => g.id === update.id);
         if (existing) Object.assign(existing, update);
-        if (currentTab === 'groups') renderPanel();
       });
 
       socket.on('assignment_updated', ({ jid, chat, action }) => {
@@ -1558,7 +1677,6 @@
     }
 
     // ─── Init ─────────────────────────────────────────────────────────────────────
-    document.getElementById('operatorBadge').textContent = 'op://offline';
     // Show empty state initially
     document.getElementById('chatList').innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted);font-size:12px">Click "Connect Bridge" to start</div>';
     renderPanel();
