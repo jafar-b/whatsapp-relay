@@ -222,7 +222,6 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       res.status(500).json({ error: e.message });
     }
   });
-
   app.post('/api/contacts/import', upload.single('file'), async (req, res) => {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
@@ -235,23 +234,83 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       let imported = 0;
       let skipped = 0;
 
-      for (const c of parsedContacts) {
-        const jid = `${c.phone}@s.whatsapp.net`;
+      // Build index maps of all existing contacts in memory by their full phone number and last 10 digits
+      const existingByFullPhone = new Map();
+      const existingByLast10 = new Map();
 
-        const exists = stores.contactStore[jid] || database.db.prepare('SELECT 1 FROM contacts WHERE id = ?').get(jid);
-        if (exists) {
-          skipped++;
-          if (stores.chatStore[jid] && (!stores.chatStore[jid].name || stores.chatStore[jid].name === c.phone)) {
-            stores.chatStore[jid].name = c.name;
-            database.upsertChat(stores.chatStore[jid]);
+      for (const jid of Object.keys(stores.contactStore)) {
+        const p = jid.split('@')[0].split(':')[0].replace(/\D/g, '');
+        if (p) {
+          if (!existingByFullPhone.has(p)) existingByFullPhone.set(p, []);
+          existingByFullPhone.get(p).push(jid);
+
+          if (p.length >= 10) {
+            const last10 = p.slice(-10);
+            if (!existingByLast10.has(last10)) existingByLast10.set(last10, []);
+            existingByLast10.get(last10).push(jid);
           }
-          continue;
+        }
+      }
+
+      for (const c of parsedContacts) {
+        // Find all matching existing JIDs using full number or last 10 digits
+        const matchedJidsSet = new Set();
+        const fullMatches = existingByFullPhone.get(c.phone);
+        if (fullMatches) {
+          for (const j of fullMatches) matchedJidsSet.add(j);
+        }
+        if (c.phone.length >= 10) {
+          const last10Matches = existingByLast10.get(c.phone.slice(-10));
+          if (last10Matches) {
+            for (const j of last10Matches) matchedJidsSet.add(j);
+          }
         }
 
-        const contactObj = { id: jid, name: c.name, notify: c.name };
-        stores.contactStore[jid] = contactObj;
-        database.upsertContact(contactObj);
-        imported++;
+        if (matchedJidsSet.size > 0) {
+          let updated = false;
+          for (const matchedJid of matchedJidsSet) {
+            const contactObj = stores.contactStore[matchedJid];
+            if (contactObj) {
+              if (contactObj.name !== c.name || contactObj.notify !== c.name) {
+                contactObj.name = c.name;
+                contactObj.notify = c.name;
+                database.upsertContact(contactObj);
+                updated = true;
+              }
+            }
+
+            const chatObj = stores.chatStore[matchedJid];
+            if (chatObj && chatObj.name !== c.name) {
+              chatObj.name = c.name;
+              database.upsertChat(chatObj);
+              updated = true;
+            }
+          }
+
+          if (updated) {
+            imported++;
+          } else {
+            skipped++;
+          }
+        } else {
+          // Create new contact if not found
+          const jid = `${c.phone}@s.whatsapp.net`;
+          const contactObj = { id: jid, name: c.name, notify: c.name };
+          stores.contactStore[jid] = contactObj;
+          database.upsertContact(contactObj);
+
+          // Add to our local index maps to prevent duplicate insertions
+          if (!existingByFullPhone.has(c.phone)) existingByFullPhone.set(c.phone, []);
+          existingByFullPhone.get(c.phone).push(jid);
+
+          if (c.phone.length >= 10) {
+            const last10 = c.phone.slice(-10);
+            if (!existingByLast10.has(last10)) existingByLast10.set(last10, []);
+            existingByLast10.get(last10).push(jid);
+          }
+
+          imported++;
+        }
       }
 
       try { fs.unlinkSync(vcfPath); } catch { }
@@ -267,7 +326,6 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       res.status(500).json({ error: err.message });
     }
   });
-
   app.get('/api/messages', async (req, res) => {
     const { jid, limit = 50, before } = req.query;
     if (!jid) {
