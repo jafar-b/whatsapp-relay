@@ -224,16 +224,47 @@
       position: absolute;
       top: 0;
       left: 0;
-      width: 4px;
+      width: 12px;
       height: 100%;
       cursor: ew-resize;
-      z-index: 10;
+      z-index: 100;
+      background: transparent;
+    }
+
+    .sidebar-resizer::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 2px;
+      height: 100%;
+      background: transparent;
       transition: background 0.15s;
     }
 
-    .sidebar-resizer:hover,
-    .sidebar-resizer.resizing {
+    .sidebar-resizer:hover::before,
+    .sidebar-resizer.resizing::before {
       background: var(--accent);
+    }
+
+    .sidebar-resizer::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 3px;
+      transform: translateY(-50%);
+      width: 6px;
+      height: 60px;
+      background: var(--accent);
+      border-radius: 3px;
+      opacity: 0;
+      transition: opacity 0.15s, height 0.15s;
+    }
+
+    .sidebar-resizer:hover::after,
+    .sidebar-resizer.resizing::after {
+      opacity: 1;
+      height: 90px; /* Increased height for the draggable button */
     }
 
     .sidebar-tabs {
@@ -390,6 +421,7 @@
     .chat-list::-webkit-scrollbar-thumb {
       background: var(--border);
       border-radius: 999px;
+      min-height: 80px; /* Ensure scrollbar thumb has enough height to be easily grabbed */
       transition: background 0.22s ease-in-out;
     }
 
@@ -517,6 +549,7 @@
       overflow: hidden;
       background: var(--bg);
       background-image: radial-gradient(ellipse at 20% 50%, rgba(124, 58, 237, 0.04) 0%, transparent 60%), radial-gradient(ellipse at 80% 20%, rgba(0, 229, 160, 0.03) 0%, transparent 50%);
+      position: relative; /* Added to contain absolute-positioned sidebar-resizer */
     }
 
     .chat-topbar {
@@ -632,6 +665,7 @@
     .messages-area::-webkit-scrollbar-thumb {
       background: var(--border);
       border-radius: 3px;
+      min-height: 80px; /* Ensure scrollbar thumb has enough height to be easily grabbed */
     }
 
     .message-row {
@@ -1137,6 +1171,7 @@
     .panel-content::-webkit-scrollbar-thumb {
       background: var(--border);
       border-radius: 3px;
+      min-height: 80px; /* Ensure scrollbar thumb has enough height to be easily grabbed */
     }
 
     /* Operator cards */
