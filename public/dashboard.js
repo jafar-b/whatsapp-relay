@@ -1581,6 +1581,36 @@
           return;
         }
 
+        // Show browser desktop notification for incoming messages
+        const outgoing = msg.fromMe || msg.outgoing || false;
+        if (!outgoing && Notification.permission === 'granted') {
+          const isTabHidden = document.hidden || document.visibilityState === 'hidden';
+          const isNotFocused = !document.hasFocus();
+          const isDifferentChat = !activeChat || activeChat.id !== (msg.from || msg.jid);
+
+          if (isTabHidden || isNotFocused || isDifferentChat) {
+            const jid = msg.from || msg.jid;
+            const chat = allChats.find(c => c.id === jid);
+            const senderName = chat ? (chat.verifiedName || chat.name || cleanJid(chat.id)) : cleanJid(jid);
+
+            let bodyText = msg.content || '';
+            if (msg.mediaType && msg.mediaType !== 'text') {
+              bodyText = `[${msg.mediaType.toUpperCase()}] ${bodyText || ''}`.trim();
+            }
+
+            const n = new Notification(senderName, {
+              body: bodyText,
+              tag: jid,
+              renotify: true
+            });
+
+            n.onclick = () => {
+              window.focus();
+              openChatById(jid, senderName);
+            };
+          }
+        }
+
         if (activeChat && (msg.from === activeChat.id || msg.jid === activeChat.id)) {
           appendMessage(normalizeMessage(msg));
         }
@@ -1678,6 +1708,73 @@
       });
     }
 
+    // ─── Notifications ────────────────────────────────────────────────────────────
+    function initNotifications() {
+      const toggleBtn = document.getElementById('notificationToggleBtn');
+      if (!toggleBtn) return;
+
+      if (!('Notification' in window)) {
+        console.warn('This browser does not support desktop notifications');
+        toggleBtn.style.display = 'none';
+        return;
+      }
+
+      toggleBtn.style.display = 'inline-flex';
+      updateNotificationButton();
+    }
+
+    function updateNotificationButton() {
+      const toggleBtn = document.getElementById('notificationToggleBtn');
+      if (!toggleBtn) return;
+
+      const state = Notification.permission;
+      if (state === 'granted') {
+        toggleBtn.innerHTML = '🔔 Notifications: On';
+        toggleBtn.style.opacity = '1';
+        toggleBtn.title = 'Notifications are enabled';
+      } else if (state === 'denied') {
+        toggleBtn.innerHTML = '🔕 Notifications: Blocked';
+        toggleBtn.style.opacity = '0.5';
+        toggleBtn.title = 'Notifications are blocked. Reset permissions in your browser settings to enable.';
+      } else {
+        toggleBtn.innerHTML = '🔔 Enable Notifications';
+        toggleBtn.style.opacity = '1';
+        toggleBtn.title = 'Click to enable desktop notifications';
+      }
+    }
+
+    function requestNotificationPermission() {
+      if (!('Notification' in window)) return;
+
+      const state = Notification.permission;
+      if (state === 'denied') {
+        showToast('Notifications are blocked by your browser. Please reset permission in browser site settings.', 'error');
+        return;
+      }
+
+      if (state === 'granted') {
+        showToast('Notifications are already enabled.', 'info');
+        return;
+      }
+
+      Notification.requestPermission().then(permission => {
+        updateNotificationButton();
+        if (permission === 'granted') {
+          showToast('Desktop notifications enabled!', 'success');
+          // Show a test notification
+          new Notification('WA Relay', {
+            body: 'Desktop notifications successfully enabled!',
+            tag: 'test-notification'
+          });
+        } else if (permission === 'denied') {
+          showToast('Notifications permission denied.', 'error');
+        }
+      });
+    }
+
+    // Expose permission request globally for HTML onclick handler
+    window.requestNotificationPermission = requestNotificationPermission;
+
     // ─── Init ─────────────────────────────────────────────────────────────────────
     // Show empty state initially
     document.getElementById('chatList').innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted);font-size:12px">Click "Connect Bridge" to start</div>';
@@ -1688,6 +1785,7 @@
     const currentOrigin = window.location.protocol.startsWith('http') ? window.location.origin : bridgeUrl;
     connectBridgeDirect(currentOrigin);
     initSidebarResize();
+    initNotifications();
 
     // ─── Mobile View Actions ──────────────────────────────────────────────────────
     function backToSidebar() {
