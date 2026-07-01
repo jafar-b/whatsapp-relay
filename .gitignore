@@ -11,3 +11,5 @@ dist/
 build/
 .devdbrc
 nodemon.json
+.claude/
+.vscode/
