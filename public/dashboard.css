@@ -686,6 +686,18 @@
       }
     }
 
+    /* Scroll-to highlight flash when jumping to a quoted message */
+    @keyframes msgHighlight {
+      0%   { background: rgba(0, 229, 160, 0.25); }
+      70%  { background: rgba(0, 229, 160, 0.15); }
+      100% { background: transparent; }
+    }
+
+    .message-row.msg-highlight .msg-bubble {
+      animation: msgHighlight 1.2s ease forwards;
+      border-radius: 12px;
+    }
+
     .message-row.outgoing {
       flex-direction: row-reverse;
     }
@@ -760,29 +772,9 @@
       font-size: 12px;
     }
 
-    .msg-actions {
-      display: flex;
-      gap: 4px;
-      margin-top: 0;
-      justify-content: flex-end;
-      max-height: 0;
-      opacity: 0;
-      overflow: hidden;
-      pointer-events: none;
-      transform: translateY(-4px);
-      transition: max-height 0.2s ease-in-out, opacity 0.2s ease-in-out,
-        transform 0.2s ease-in-out, margin-top 0.2s ease-in-out;
-    }
-
-    .message-row.outgoing .msg-bubble:hover .msg-actions {
-      max-height: 40px;
-      opacity: 1;
-      margin-top: 6px;
-      pointer-events: auto;
-      transform: translateY(0);
-    }
 
     /* Media in bubbles */
+
     .msg-image {
       max-width: 100%;
       max-height: 220px;
@@ -924,6 +916,178 @@
       padding: 4px 10px;
       font-size: 11px;
     }
+
+    /* Reply bar (shown when replying to a message) */
+    .reply-bar {
+      display: none;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 12px;
+      overflow: hidden;
+    }
+
+    .reply-bar.visible {
+      display: flex;
+    }
+
+    .reply-bar-accent {
+      width: 3px;
+      min-width: 3px;
+      height: 36px;
+      border-radius: 2px;
+      background: var(--accent);
+      flex-shrink: 0;
+    }
+
+    .reply-bar-body {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .reply-bar-sender {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--accent);
+      font-family: var(--font-whatsapp);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .reply-bar-text {
+      font-size: 12px;
+      color: var(--muted);
+      font-family: var(--font-whatsapp);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .reply-bar-close {
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      border-radius: 4px;
+      padding: 4px 8px;
+      font-size: 13px;
+      flex-shrink: 0;
+      transition: color 0.15s;
+    }
+
+    .reply-bar-close:hover {
+      color: var(--text);
+    }
+
+    /* Quoted message preview inside a bubble */
+    .msg-quoted {
+      display: flex;
+      align-items: stretch;
+      gap: 8px;
+      margin-bottom: 6px;
+      border-radius: 6px;
+      overflow: hidden;
+      cursor: pointer;
+      background: rgba(0, 0, 0, 0.08);
+      padding: 6px 8px;
+    }
+
+    .message-row.incoming .msg-quoted {
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .message-row.outgoing .msg-quoted {
+      background: rgba(0, 0, 0, 0.12);
+    }
+
+    .msg-quoted-accent {
+      width: 3px;
+      min-width: 3px;
+      border-radius: 2px;
+      background: var(--accent);
+      flex-shrink: 0;
+    }
+
+    .message-row.outgoing .msg-quoted-accent {
+      background: #007a55;
+    }
+
+    .msg-quoted-body {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .msg-quoted-sender {
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--accent);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .message-row.outgoing .msg-quoted-sender {
+      color: #005c3e;
+    }
+
+    .msg-quoted-text {
+      font-size: 11px;
+      opacity: 0.75;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .msg-quoted-media-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      font-size: 10px;
+      opacity: 0.6;
+    }
+
+    /* Reply button visible on hover for ALL messages (incoming + outgoing) */
+    .msg-actions {
+      display: flex;
+      gap: 4px;
+      margin-top: 0;
+      justify-content: flex-end;
+      max-height: 0;
+      opacity: 0;
+      overflow: hidden;
+      pointer-events: none;
+      transform: translateY(-4px);
+      transition: max-height 0.2s ease-in-out, opacity 0.2s ease-in-out,
+        transform 0.2s ease-in-out, margin-top 0.2s ease-in-out;
+    }
+
+    .message-row.outgoing .msg-bubble:hover .msg-actions,
+    .message-row.incoming .msg-bubble:hover .msg-actions {
+      max-height: 40px;
+      opacity: 1;
+      margin-top: 6px;
+      pointer-events: auto;
+      transform: translateY(0);
+    }
+
+    .msg-bubble.show-actions .msg-actions {
+      max-height: 40px;
+      opacity: 1;
+      margin-top: 6px;
+      pointer-events: auto;
+      transform: translateY(0);
+    }
+
 
     /* Media preview strip */
     .media-preview-strip {

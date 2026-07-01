@@ -154,6 +154,16 @@
 
         <!-- Input -->
         <div class="input-bar">
+          <!-- Reply indicator -->
+          <div class="reply-bar" id="replyBar">
+            <div class="reply-bar-accent"></div>
+            <div class="reply-bar-body">
+              <div class="reply-bar-sender" id="replyBarSender"></div>
+              <div class="reply-bar-text" id="replyBarText"></div>
+            </div>
+            <button class="reply-bar-close" onclick="cancelReply()">✕</button>
+          </div>
+
           <!-- Editing indicator -->
           <div class="editing-bar" id="editingBar">
             <span class="editing-bar-text" id="editingBarText">Editing message…</span>

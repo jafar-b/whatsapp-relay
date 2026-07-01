@@ -284,6 +284,10 @@ function normalizeMessageRecord(msg = {}) {
     editedAt: msg.editedAt ? toTimestamp(msg.editedAt) : null,
     deleted: Boolean(msg.deleted),
     clientTempId: msg.clientTempId || null,
+    quotedMessageId: msg.quotedMessageId || null,
+    quotedContent: msg.quotedContent || null,
+    quotedSender: msg.quotedSender || null,
+    quotedMediaType: msg.quotedMediaType || null,
   };
 }
 
@@ -885,6 +889,10 @@ async function recordOutboundMessage({ jid, operator, result, message }) {
     editedAt: null,
     deleted: false,
     clientTempId: message.clientTempId || null,
+    quotedMessageId: message.quotedMessageId || null,
+    quotedContent: message.quotedContent || null,
+    quotedSender: message.quotedSender || null,
+    quotedMediaType: message.quotedMediaType || null,
   });
   updateChatPreview(jid, sentMsg.content, timestamp);
   saveStore();
@@ -930,6 +938,7 @@ module.exports = {
   resolveAllLidsFromStore,
   canEditMessage,
   canDeleteForEveryone,
+  findMessageInThread,
   normalizeChat,
   normalizeMessageRecord,
   unwrapMessage,

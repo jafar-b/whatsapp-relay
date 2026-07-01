@@ -739,6 +739,48 @@ async function parseMessage(raw, skipMedia = false) {
   let fileName = null;
   let mimetype = null;
 
+  // --- Extract reply/quoted context from WhatsApp contextInfo ---
+  // contextInfo is present on extendedTextMessage for text replies, and on
+  // media message types for media replies. stanzaId = the quoted message ID.
+  const contextInfo =
+    m.extendedTextMessage?.contextInfo ||
+    m.imageMessage?.contextInfo ||
+    m.videoMessage?.contextInfo ||
+    m.audioMessage?.contextInfo ||
+    m.documentMessage?.contextInfo ||
+    m.stickerMessage?.contextInfo ||
+    null;
+
+  let quotedMessageId = null;
+  let quotedContent = null;
+  let quotedSender = null;
+  let quotedMediaType = null;
+
+  if (contextInfo?.stanzaId) {
+    quotedMessageId = contextInfo.stanzaId;
+    quotedSender = contextInfo.participant || contextInfo.remoteJid || null;
+    const qm = contextInfo.quotedMessage;
+    if (qm) {
+      const unwrappedQm = stores.unwrapMessage(qm);
+      if (unwrappedQm) {
+        quotedContent =
+          unwrappedQm.conversation ||
+          unwrappedQm.extendedTextMessage?.text ||
+          unwrappedQm.imageMessage?.caption ||
+          unwrappedQm.videoMessage?.caption ||
+          unwrappedQm.documentMessage?.fileName ||
+          null;
+        if (unwrappedQm.imageMessage) quotedMediaType = 'image';
+        else if (unwrappedQm.videoMessage) quotedMediaType = 'video';
+        else if (unwrappedQm.audioMessage) quotedMediaType = unwrappedQm.audioMessage.ptt ? 'voice' : 'audio';
+        else if (unwrappedQm.documentMessage) quotedMediaType = 'document';
+        else if (unwrappedQm.stickerMessage) quotedMediaType = 'sticker';
+        else if (unwrappedQm.locationMessage) quotedMediaType = 'location';
+        else quotedMediaType = 'text';
+      }
+    }
+  }
+
   if (m.conversation || m.extendedTextMessage) {
     content = m.conversation || m.extendedTextMessage?.text;
     mediaType = 'text';
@@ -855,6 +897,10 @@ async function parseMessage(raw, skipMedia = false) {
     mimetype,
     timestamp: raw.messageTimestamp,
     isGroup: raw.key.remoteJid?.endsWith('@g.us'),
+    quotedMessageId,
+    quotedContent,
+    quotedSender,
+    quotedMediaType,
   };
 }
 

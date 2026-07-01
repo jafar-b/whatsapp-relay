@@ -65,6 +65,40 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
     };
   }
 
+  /**
+   * Build a minimal synthetic quoted message object that Baileys accepts.
+   * We don't store raw Baileys message objects, so we reconstruct from our
+   * normalized record. This is sufficient for WhatsApp to render the reply
+   * correctly with the quoted preview bubble on the recipient's device.
+   */
+  function buildQuotedContext(jid, quotedMessageId) {
+    if (!quotedMessageId) return null;
+    const msg = stores.findMessageInThread(jid, quotedMessageId);
+    if (!msg) return null;
+    // Determine participant for group messages (needed for Baileys key)
+    const participant = msg.participant || null;
+    const remoteJid = msg.from || msg.jid || jid;
+    // Build the inner `message` payload: prefer conversation for text,
+    // fall back to extendedTextMessage for captions/other.
+    let innerMessage;
+    if (!msg.mediaType || msg.mediaType === 'text') {
+      innerMessage = { conversation: msg.content || '' };
+    } else {
+      // For media, wrap as extendedTextMessage so Baileys renders it
+      innerMessage = { extendedTextMessage: { text: msg.content || '' } };
+    }
+    return {
+      key: {
+        remoteJid,
+        fromMe: Boolean(msg.fromMe),
+        id: msg.id,
+        ...(participant ? { participant } : {}),
+      },
+      message: innerMessage,
+      messageTimestamp: msg.timestamp || Math.floor(Date.now() / 1000),
+    };
+  }
+
   function getFirstLanIpv4() {
     const nets = os.networkInterfaces();
     for (const iface of Object.values(nets)) {
@@ -403,7 +437,11 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
     const lock = stores.ensureChatLockForOperator(req.body.jid, operator);
     if (!lock.ok) return res.status(lock.status).json({ error: lock.message, chat: lock.chat });
     try {
-      const result = await sock.sendMessage(req.body.jid, { text: req.body.text });
+      const quotedCtx = buildQuotedContext(req.body.jid, req.body.quotedMessageId);
+      const options = quotedCtx ? { quoted: quotedCtx } : {};
+      const result = await sock.sendMessage(req.body.jid, { text: req.body.text }, options);
+      // Look up quoted message metadata for storage
+      const quotedMsg = req.body.quotedMessageId ? stores.findMessageInThread(req.body.jid, req.body.quotedMessageId) : null;
       const message = await stores.recordOutboundMessage({
         jid: req.body.jid,
         operator,
@@ -412,6 +450,10 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
           content: req.body.text,
           mediaType: 'text',
           clientTempId: req.body.clientTempId || null,
+          quotedMessageId: quotedMsg?.id || null,
+          quotedContent: quotedMsg?.content || null,
+          quotedSender: quotedMsg?.sender || null,
+          quotedMediaType: quotedMsg?.mediaType || null,
         },
       });
       res.json({ success: true, message });
@@ -755,14 +797,18 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
       });
     });
 
-    socket.on('send_message', async ({ jid, text, clientTempId }) => {
+    socket.on('send_message', async ({ jid, text, clientTempId, quotedMessageId }) => {
       const sock = whatsapp.getSock();
       if (!sock || whatsapp.getStatus() !== 'connected') return;
       const operator = getOperatorFromSocket(socket);
       const lock = stores.ensureChatLockForOperator(jid, operator);
       if (!lock.ok) return stores.sendLockError(socket, lock);
       try {
-        const result = await sock.sendMessage(jid, { text });
+        const quotedCtx = buildQuotedContext(jid, quotedMessageId);
+        const options = quotedCtx ? { quoted: quotedCtx } : {};
+        const result = await sock.sendMessage(jid, { text }, options);
+        // Look up quoted message metadata for storage
+        const quotedMsg = quotedMessageId ? stores.findMessageInThread(jid, quotedMessageId) : null;
         const sentMsg = await stores.recordOutboundMessage({
           jid,
           operator,
@@ -771,6 +817,10 @@ function registerRoutes({ app, io, stores, database, whatsapp, CONFIG, MEDIA_DIR
             content: text,
             mediaType: 'text',
             clientTempId: clientTempId || null,
+            quotedMessageId: quotedMsg?.id || null,
+            quotedContent: quotedMsg?.content || null,
+            quotedSender: quotedMsg?.sender || null,
+            quotedMediaType: quotedMsg?.mediaType || null,
           },
         });
         socket.emit('message_ack', { clientTempId, serverId: sentMsg.id, timestamp: sentMsg.timestamp });

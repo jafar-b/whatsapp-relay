@@ -13,6 +13,7 @@
     let searchTimer = null;
     let editingMessageId = null;
     let editingMessageJid = null;
+    let replyingToMessage = null; // { id, content, sender, fromMe, mediaType }
     let confirmCallback = null;
     let chatMessageCounts = {};    // jid -> total message count
     let chatHasMore = {};          // jid -> boolean
@@ -636,6 +637,7 @@
     function openChat(chat, itemEl) {
       activeChat = chat;
       cancelEdit();
+      cancelReply();
       updateChatItemHighlight();
       document.getElementById('emptyState').style.display = 'none';
       const cv = document.getElementById('chatView');
@@ -754,6 +756,34 @@
       }
     }
 
+    /**
+     * Build the quoted-message preview HTML to embed inside a message bubble.
+     * Clicking the preview scrolls to the original message if it's loaded.
+     */
+    function buildQuotedPreviewHtml(msg) {
+      if (!msg.quotedMessageId) return '';
+      const mediaIcons = {
+        image: '🖼️', video: '🎥', voice: '🎤', audio: '🎵',
+        document: '📄', sticker: '😊', location: '📍',
+      };
+      const icon = mediaIcons[msg.quotedMediaType] || '';
+      const quotedSenderDisplay = msg.quotedSender ? cleanJid(msg.quotedSender) : (msg.fromMe ? 'You' : 'Them');
+      const quotedText = msg.quotedContent
+        ? (msg.quotedContent.length > 80 ? msg.quotedContent.slice(0, 80) + '…' : msg.quotedContent)
+        : (msg.quotedMediaType && msg.quotedMediaType !== 'text' ? `${icon} ${msg.quotedMediaType}` : '…');
+      const mediaTag = (msg.quotedMediaType && msg.quotedMediaType !== 'text')
+        ? `<span class="msg-quoted-media-tag">${icon} ${msg.quotedMediaType.charAt(0).toUpperCase() + msg.quotedMediaType.slice(1)}</span> `
+        : '';
+      return `
+        <div class="msg-quoted" onclick="scrollToMessage('${msg.quotedMessageId}')">
+          <div class="msg-quoted-accent"></div>
+          <div class="msg-quoted-body">
+            <div class="msg-quoted-sender">${quotedSenderDisplay}</div>
+            <div class="msg-quoted-text">${mediaTag}${quotedText}</div>
+          </div>
+        </div>`;
+    }
+
     function appendMessage(msg, scroll = true, prepend = false) {
       const area = document.getElementById('messagesArea');
       // Check for duplicate
@@ -773,6 +803,7 @@
       row.dataset.mediaType = msg.mediaType || 'text';
       row.dataset.deleted = msg.deleted ? '1' : '0';
       row.dataset.content = msg.content || '';
+      if (msg.quotedMessageId) row.dataset.quotedMessageId = msg.quotedMessageId;
       let resolvedSender = cleanJid(msg.sender);
       const senderName = outgoing
         ? (msg.operatorName || resolvedSender || 'Unknown')
@@ -789,15 +820,16 @@
       const isGroup = activeChat?.type === 'group' || activeChat?.type === 'community';
       const editedMark = msg.editedAt ? '<div class="msg-edited">(edited)</div>' : '';
       const showSender = (!outgoing && isGroup) || (outgoing && Boolean(msg.operatorName));
-      const allowEdit = canEditMessage(msg);
-      const allowDelete = canDeleteForEveryone(msg);
-
       let contentHtml;
       if (msg.deleted) {
         contentHtml = '<div class="msg-deleted">This message was deleted</div>';
       } else {
-        contentHtml = buildMediaContent(msg);
+        contentHtml = buildQuotedPreviewHtml(msg) + buildMediaContent(msg);
       }
+
+      const allowReply = !msg.deleted;
+      const allowEdit = canEditMessage(msg);
+      const allowDelete = canDeleteForEveryone(msg);
 
       row.innerHTML = `
     <div class="msg-avatar">${initial}</div>
@@ -805,8 +837,9 @@
       ${showSender ? `<div class="msg-sender">${senderName}</div>` : ''}
       ${contentHtml}
       ${msg.deleted ? '' : `<div class="msg-time">${timeStr}${editedMark}</div>`}
-      ${outgoing && !msg.deleted && (allowEdit || allowDelete) ? `
+      ${!msg.deleted && (allowReply || allowEdit || allowDelete) ? `
         <div class="msg-actions">
+          ${allowReply ? `<button class="btn-ghost-sm" onclick="startReply('${msg.id}')">↩ Reply</button>` : ''}
           ${allowEdit ? `<button class="btn-ghost-sm" onclick="startEdit('${msg.id}')">✎ Edit</button>` : ''}
           ${allowDelete ? `<button class="btn-ghost-sm" style="color:var(--danger)" onclick="startDelete('${msg.id}')">🗑 Delete</button>` : ''}
         </div>` : ''}
@@ -909,6 +942,10 @@
         mimetype: m.mimetype,
         editedAt: m.editedAt,
         deleted: m.deleted || false,
+        quotedMessageId: m.quotedMessageId || null,
+        quotedContent: m.quotedContent || null,
+        quotedSender: m.quotedSender || null,
+        quotedMediaType: m.quotedMediaType || null,
       };
     }
 
@@ -946,7 +983,53 @@
       })();
     }
 
-    // ─── Message Actions (Edit / Delete) ──────────────────────────────────────────
+    // ─── Message Actions (Edit / Delete / Reply) ──────────────────────────────────
+    function startReply(messageId) {
+      if (!activeChat) return;
+      const row = document.getElementById('msg-' + messageId);
+      if (!row) return;
+      const fromMe = row.dataset.fromMe === '1';
+      const content = row.dataset.content || '';
+      // Resolve sender label
+      const senderEl = row.querySelector('.msg-sender');
+      const senderName = senderEl ? senderEl.textContent : (fromMe ? (operatorName || 'You') : (activeChat?.name || 'Them'));
+      const mediaType = row.dataset.mediaType || 'text';
+
+      replyingToMessage = { id: messageId, content, sender: senderName, fromMe, mediaType };
+
+      const replyBar = document.getElementById('replyBar');
+      replyBar.classList.add('visible');
+      document.getElementById('replyBarSender').textContent = fromMe ? 'You' : senderName;
+      const mediaIcons = { image: '🖼️', video: '🎥', voice: '🎤', audio: '🎵', document: '📄', sticker: '😊', location: '📍' };
+      const icon = mediaIcons[mediaType] || '';
+      const preview = content
+        ? (content.length > 60 ? content.slice(0, 60) + '…' : content)
+        : (mediaType !== 'text' ? `${icon} ${mediaType}` : '…');
+      document.getElementById('replyBarText').textContent = (mediaType !== 'text' ? `${icon} ` : '') + preview;
+
+      document.getElementById('messageInput').focus();
+    }
+
+    function cancelReply() {
+      replyingToMessage = null;
+      document.getElementById('replyBar').classList.remove('visible');
+    }
+
+    /**
+     * Scroll to a message in the chat area (used when clicking a quoted preview).
+     */
+    function scrollToMessage(messageId) {
+      const el = document.getElementById('msg-' + messageId);
+      if (!el) {
+        showToast('Original message not loaded', 'info');
+        return;
+      }
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // Flash highlight
+      el.classList.add('msg-highlight');
+      setTimeout(() => el.classList.remove('msg-highlight'), 1200);
+    }
+
     function startEdit(messageId) {
       if (!activeChat) return;
       const msg = getRenderedMessage(messageId);
@@ -1019,8 +1102,10 @@
       if (!text) return;
 
       const tempId = genTempId();
+      const quotedMessageId = replyingToMessage?.id || null;
+
       if (socket?.connected) {
-        socket.emit('send_message', { jid: activeChat.id, text, clientTempId: tempId });
+        socket.emit('send_message', { jid: activeChat.id, text, clientTempId: tempId, quotedMessageId });
       } else {
         showToast('Not connected to bridge', 'error');
         return;
@@ -1039,9 +1124,14 @@
         fromMe: true,
         mediaType: 'text',
         deleted: false,
+        quotedMessageId: replyingToMessage?.id || null,
+        quotedContent: replyingToMessage?.content || null,
+        quotedSender: replyingToMessage?.sender || null,
+        quotedMediaType: replyingToMessage?.mediaType || null,
       });
       sentTempIds.add(tempId);
 
+      cancelReply();
       input.value = '';
       input.style.height = 'auto';
     }
@@ -1791,6 +1881,10 @@
 
     // Expose toggle globally for HTML onclick handler
     window.toggleNotifications = toggleNotifications;
+    // Expose reply functions globally (called from dynamically built HTML onclick attributes)
+    window.startReply = startReply;
+    window.cancelReply = cancelReply;
+    window.scrollToMessage = scrollToMessage;
 
     // ─── Init ─────────────────────────────────────────────────────────────────────
     // Show empty state initially
