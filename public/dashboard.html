@@ -75,7 +75,7 @@
     <div class="topbar-right">
       <span id="bridgeActionContainer"></span>
       <span id="whatsappControlContainer"></span>
-      <button class="btn btn-ghost" id="notificationToggleBtn" onclick="requestNotificationPermission()" style="display:none;">🔔 Enable Notifications</button>
+      <button class="btn btn-ghost" id="notificationToggleBtn" onclick="toggleNotifications()" style="display:none; width: 34px; height: 34px; padding: 0; border-radius: 50%; justify-content: center; align-items: center;" aria-label="Toggle Notifications">🔔</button>
       <button class="btn btn-ghost" onclick="triggerImportContacts()">Import Contacts</button>
       <button class="btn btn-ghost mobile-only-btn" onclick="switchTab('operators', document.querySelector('.panel-tab'))">Dashboard Info</button>
       <button class="btn btn-primary" onclick="switchToCreate()">+ New Group</button>

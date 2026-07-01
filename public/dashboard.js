@@ -1583,7 +1583,7 @@
 
         // Show browser desktop notification for incoming messages
         const outgoing = msg.fromMe || msg.outgoing || false;
-        if (!outgoing && Notification.permission === 'granted') {
+        if (!outgoing && Notification.permission === 'granted' && !notificationsMuted) {
           const isTabHidden = document.hidden || document.visibilityState === 'hidden';
           const isNotFocused = !document.hasFocus();
           const isDifferentChat = !activeChat || activeChat.id !== (msg.from || msg.jid);
@@ -1709,6 +1709,8 @@
     }
 
     // ─── Notifications ────────────────────────────────────────────────────────────
+    let notificationsMuted = localStorage.getItem('whatsapp_relay_notifications_muted') === 'true';
+
     function initNotifications() {
       const toggleBtn = document.getElementById('notificationToggleBtn');
       if (!toggleBtn) return;
@@ -1728,22 +1730,30 @@
       if (!toggleBtn) return;
 
       const state = Notification.permission;
-      if (state === 'granted') {
-        toggleBtn.innerHTML = '🔔 Notifications: On';
-        toggleBtn.style.opacity = '1';
-        toggleBtn.title = 'Notifications are enabled';
-      } else if (state === 'denied') {
-        toggleBtn.innerHTML = '🔕 Notifications: Blocked';
-        toggleBtn.style.opacity = '0.5';
-        toggleBtn.title = 'Notifications are blocked. Reset permissions in your browser settings to enable.';
+
+      const activeBellSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle;"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"></path><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"></path></svg>`;
+      const silentBellSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle;"><path d="M13.73 21a2 2 0 0 1-3.46 0"></path><path d="M18.63 13A17.89 17.89 0 0 1 18 8"></path><path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14"></path><path d="M18 8a6 6 0 0 0-9.33-5"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>`;
+      const blockedBellSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--danger)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle;"><path d="M13.73 21a2 2 0 0 1-3.46 0"></path><path d="M18.63 13A17.89 17.89 0 0 1 18 8"></path><path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14"></path><path d="M18 8a6 6 0 0 0-9.33-5"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>`;
+
+      if (state === 'denied') {
+        toggleBtn.innerHTML = blockedBellSvg;
+        toggleBtn.title = 'Notifications Blocked. Reset site permissions in your browser settings to enable.';
+      } else if (state === 'granted') {
+        if (notificationsMuted) {
+          toggleBtn.innerHTML = silentBellSvg;
+          toggleBtn.title = 'Notifications: Muted (Click to unmute)';
+        } else {
+          toggleBtn.innerHTML = activeBellSvg;
+          toggleBtn.title = 'Notifications: Active (Click to mute)';
+        }
       } else {
-        toggleBtn.innerHTML = '🔔 Enable Notifications';
-        toggleBtn.style.opacity = '1';
+        // Default permission state
+        toggleBtn.innerHTML = silentBellSvg;
         toggleBtn.title = 'Click to enable desktop notifications';
       }
     }
 
-    function requestNotificationPermission() {
+    function toggleNotifications() {
       if (!('Notification' in window)) return;
 
       const state = Notification.permission;
@@ -1752,28 +1762,35 @@
         return;
       }
 
-      if (state === 'granted') {
-        showToast('Notifications are already enabled.', 'info');
+      if (state === 'default') {
+        Notification.requestPermission().then(permission => {
+          if (permission === 'granted') {
+            notificationsMuted = false;
+            localStorage.setItem('whatsapp_relay_notifications_muted', 'false');
+            updateNotificationButton();
+            showToast('Desktop notifications enabled!', 'success');
+            // Show a test notification
+            new Notification('WA Relay', {
+              body: 'Desktop notifications successfully enabled!',
+              tag: 'test-notification'
+            });
+          } else {
+            updateNotificationButton();
+            showToast('Permission denied.', 'error');
+          }
+        });
         return;
       }
 
-      Notification.requestPermission().then(permission => {
-        updateNotificationButton();
-        if (permission === 'granted') {
-          showToast('Desktop notifications enabled!', 'success');
-          // Show a test notification
-          new Notification('WA Relay', {
-            body: 'Desktop notifications successfully enabled!',
-            tag: 'test-notification'
-          });
-        } else if (permission === 'denied') {
-          showToast('Notifications permission denied.', 'error');
-        }
-      });
+      // Toggle state if already granted
+      notificationsMuted = !notificationsMuted;
+      localStorage.setItem('whatsapp_relay_notifications_muted', notificationsMuted ? 'true' : 'false');
+      updateNotificationButton();
+      showToast(notificationsMuted ? 'Notifications silenced' : 'Notifications active', 'info');
     }
 
-    // Expose permission request globally for HTML onclick handler
-    window.requestNotificationPermission = requestNotificationPermission;
+    // Expose toggle globally for HTML onclick handler
+    window.toggleNotifications = toggleNotifications;
 
     // ─── Init ─────────────────────────────────────────────────────────────────────
     // Show empty state initially
