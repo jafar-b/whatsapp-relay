@@ -162,17 +162,80 @@ function markMessageDeletedInStore(jid, messageId, options = {}) {
   return found;
 }
 
+function handleMessageEditInStore(jid, messageId, newContent, options = {}) {
+  if (!jid || !messageId) return false;
+  const emitEvent = options.emitEvent !== false;
+  const targetJids = getThreadJids(jid);
+  let found = false;
+  const editedAt = Math.floor(Date.now() / 1000);
+
+  for (const threadJid of targetJids) {
+    const thread = stores.messageStore[threadJid];
+    if (!thread) continue;
+    const msg = thread.find((item) => item.id === messageId);
+    if (!msg) continue;
+    msg.content = newContent;
+    msg.editedAt = editedAt;
+    database.upsertMessage(msg);
+    found = true;
+
+    const chat = stores.chatStore[threadJid];
+    if (chat) {
+      const messages = stores.getMessagesForJid(threadJid);
+      const last = messages[messages.length - 1];
+      chat.lastMsg = last?.deleted ? 'This message was deleted' : (last?.content || '');
+      if (last?.timestamp) chat.timestamp = last.timestamp;
+      database.upsertChat(chat);
+    }
+  }
+
+  if (found) {
+    if (emitEvent) io.emit('message_edited', { jid: targetJids[0], messageId, newContent, editedAt: editedAt * 1000 });
+    stores.broadcastChats();
+    stores.saveStore();
+  }
+
+  return found;
+}
+
 function handleProtocolMessage(rawMsg, unwrappedMsg, options = {}) {
   const protocol = unwrappedMsg?.protocolMessage;
+  if (!protocol) return false;
+
   // WhatsApp "Delete for everyone" arrives as protocolMessage(type=0)
   // referencing the target message key rather than a normal content message.
-  if (!protocol || protocol.type !== 0) return false;
+  if (protocol.type === 0) {
+    const targetId = protocol.key?.id;
+    const targetJid = stores.getPreferredJid(protocol.key?.remoteJid || rawMsg?.key?.remoteJid);
+    if (!targetId || !targetJid) return true;
+    markMessageDeletedInStore(targetJid, targetId, options);
+    return true;
+  }
 
-  const targetId = protocol.key?.id;
-  const targetJid = stores.getPreferredJid(protocol.key?.remoteJid || rawMsg?.key?.remoteJid);
-  if (!targetId || !targetJid) return true;
-  markMessageDeletedInStore(targetJid, targetId, options);
-  return true;
+  // WhatsApp Edit Message arrives as protocolMessage(type=14)
+  if (protocol.type === 14) {
+    const targetId = protocol.key?.id;
+    const targetJid = stores.getPreferredJid(protocol.key?.remoteJid || rawMsg?.key?.remoteJid);
+    if (!targetId || !targetJid) return true;
+    
+    // Extract new edited text content
+    const editedMsg = protocol.editedMessage;
+    if (editedMsg) {
+      const unwrappedEdited = stores.unwrapMessage(editedMsg);
+      if (unwrappedEdited) {
+        const newContent =
+          unwrappedEdited.conversation ||
+          unwrappedEdited.extendedTextMessage?.text ||
+          unwrappedEdited.imageMessage?.caption ||
+          unwrappedEdited.videoMessage?.caption ||
+          '';
+        handleMessageEditInStore(targetJid, targetId, newContent, options);
+      }
+    }
+    return true;
+  }
+
+  return false;
 }
 
 function setSock(newSock) {
